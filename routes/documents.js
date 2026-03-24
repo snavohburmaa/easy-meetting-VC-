@@ -8,7 +8,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import * as rooms from "../lib/rooms.js";
 import * as roomDocuments from "../lib/roomDocuments.js";
 import { extFromName, sanitizeOriginalName } from "../lib/documentExtract.js";
-import { processUploadedDocument } from "../lib/meetingDocumentPipeline.js";
+import { processUploadedDocument, processUserDocument } from "../lib/meetingDocumentPipeline.js";
 import { askAboutDocument } from "../lib/geminiDocChat.js";
 
 const MAX_BYTES = Number(process.env.MAX_DOCUMENT_BYTES) || 20 * 1024 * 1024;
@@ -96,9 +96,10 @@ export function createDocumentsRouter(io) {
       const user = await authUser(req);
       if (!user) return res.status(401).json({ error: "auth_required" });
 
-      const gate = await assertHostInRoom(code, user);
+      // Any room member can upload their own private document
+      const gate = await assertInRoom(code, user);
       if (!gate.ok) {
-        const status = gate.error === "host_only" ? 403 : 404;
+        const status = gate.error === "not_in_room" ? 403 : 404;
         return res.status(status).json({ error: gate.error });
       }
 
@@ -124,16 +125,24 @@ export function createDocumentsRouter(io) {
         status: "processing",
       });
 
+      // Process as a private per-user document
+      const uploaderEmail = user.email;
       setImmediate(() => {
-        processUploadedDocument(io, code, {
+        processUserDocument(io, code, uploaderEmail, {
           docId,
           filePath: req.file.path,
           fileName,
           mime,
           maxExtractChars: MAX_EXTRACT,
-        }).catch((err) => {
+        }).catch(async (err) => {
           console.error("[doc pipeline]", err);
-          io.to(code).emit("doc:error", { docId, fileName, message: String(err && err.message ? err.message : err) });
+          // Emit error only to this user's sockets
+          const socks = await io.in(code).fetchSockets();
+          for (const s of socks) {
+            if (s.user && s.user.email === uploaderEmail) {
+              s.emit("doc:error", { docId, fileName, message: String(err && err.message ? err.message : err) });
+            }
+          }
         });
       });
     }
@@ -151,7 +160,11 @@ export function createDocumentsRouter(io) {
     const gate = await assertInRoom(code, user);
     if (!gate.ok) return res.status(403).json({ error: gate.error });
 
-    const doc = roomDocuments.getActiveDoc(code);
+    // Check user's private doc first, fall back to shared room doc
+    let doc = roomDocuments.getUserDoc(code, user.email);
+    if (!doc || doc.docId !== docId) {
+      doc = roomDocuments.getActiveDoc(code);
+    }
     if (!doc || doc.docId !== docId) {
       return res.status(404).json({ error: "document_not_found" });
     }
@@ -180,7 +193,7 @@ export function createDocumentsRouter(io) {
   });
 
   /**
-   * Ask Gemini about the active document (anyone in the room). Body: { question: string, language?: string }
+   * Ask Eazii AI about the user's private document. Body: { question: string, language?: string }
    */
   router.post(
     "/rooms/:code/documents/chat",
@@ -203,11 +216,12 @@ export function createDocumentsRouter(io) {
         });
       }
 
-      const doc = roomDocuments.getActiveDoc(code);
+      // Use the user's own private document
+      const doc = roomDocuments.getUserDoc(code, user.email);
       if (!doc || !doc.ready || !(doc.extractedText && String(doc.extractedText).trim())) {
         return res.status(400).json({
           error: "no_document",
-          message: "No processed document in this room. Wait for the host upload to finish.",
+          message: "Upload a document first, then ask questions about it.",
         });
       }
 

@@ -24,9 +24,10 @@
   let micMuted = false;
   let camMuted = false;
 
-  // Voice-to-text state
-  let sttRecognition = null;
+  // Voice-to-text state (server-side Whisper)
+  let sttMediaRecorder = null;
   let sttActive = false;
+  let sttChunkInterval = null;
 
   // NotebookLM conversation history (client-side only)
   let notebookConversation = [];
@@ -348,7 +349,8 @@
 
   function syncDocHostUi() {
     const row = $("doc-upload-row");
-    if (row) row.classList.toggle("hidden", !meetingState.isHost);
+    // Every member can upload their own private document
+    if (row) row.classList.remove("hidden");
   }
 
   function emitDocLanguage() {
@@ -377,8 +379,8 @@
     if (notebookConversation.length === 0) {
       const empty = document.createElement("div");
       empty.className = "notebook-empty";
-      empty.innerHTML = '<i data-lucide="sparkles" style="width:24px;height:24px;stroke:var(--text-3);stroke-width:1.5;"></i>' +
-        '<p>Ask anything about the uploaded document. Gemini will analyze and answer in your language.</p>';
+      empty.innerHTML = '<i data-lucide="message-circle-question" style="width:24px;height:24px;stroke:var(--text-3);stroke-width:1.5;"></i>' +
+        '<p>Ask anything about the uploaded document. Eazii will analyze and answer in your language.</p>';
       container.appendChild(empty);
       renderIcons();
       return;
@@ -421,88 +423,70 @@
     return d.innerHTML;
   }
 
-  // ── Voice-to-Text (Web Speech API) ──────────────────────────
+  // ── Voice-to-Text (Server-side Whisper) ─────────────────────
+  const STT_CHUNK_MS = 4000; // send audio every 4 seconds
+
   function initStt() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      const btn = $("btn-stt");
-      if (btn) btn.style.display = "none";
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event) => {
-      let interim = "";
-      let final = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += transcript;
-        } else {
-          interim += transcript;
-        }
-      }
-
-      // Show interim in live bar
-      const liveText = $("stt-live-text");
-      if (liveText) liveText.textContent = interim || "Listening...";
-
-      // When we get a final result, add to chat input
-      if (final.trim()) {
-        const input = $("chat-input");
-        if (input) {
-          input.value += (input.value ? " " : "") + final.trim();
-        }
-        if (liveText) liveText.textContent = "Listening...";
-      }
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error === "not-allowed") {
-        meetingStatus("Microphone access denied for speech recognition.");
-      }
-      stopStt();
-    };
-
-    recognition.onend = () => {
-      if (sttActive) {
-        // Restart if still active (continuous mode can stop unexpectedly)
-        try {
-          const langSel = $("stt-lang-select");
-          recognition.lang = langSel ? langSel.value : "en-US";
-          recognition.start();
-        } catch (_) {
-          stopStt();
-        }
-      }
-    };
-
-    sttRecognition = recognition;
+    // Nothing to initialize — MediaRecorder is created on start
   }
 
   function startStt() {
-    if (!sttRecognition) return;
-    const langSel = $("stt-lang-select");
-    sttRecognition.lang = langSel ? langSel.value : "en-US";
+    if (sttActive) return;
+    if (!localStream) { meetingStatus("No microphone stream available."); return; }
+
+    // Create a new stream with only audio tracks
+    const audioTracks = localStream.getAudioTracks();
+    if (!audioTracks.length) { meetingStatus("No audio track found."); return; }
+    const audioStream = new MediaStream(audioTracks);
+
+    let mimeType = "audio/webm;codecs=opus";
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = "audio/webm";
+    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = ""; // let the browser pick
+    }
+
+    const recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
+
+    recorder.ondataavailable = (e) => {
+      if (!e.data || e.data.size === 0) return;
+      if (!socket || !socket.connected) return;
+
+      const langSel = $("stt-lang-select");
+      const lang = langSel ? langSel.value : "";
+      // Convert lang code like "en-US" -> "en" for Whisper
+      const whisperLang = lang.split("-")[0] || "";
+
+      e.data.arrayBuffer().then((buf) => {
+        socket.emit("audio:chunk", {
+          audio: buf,
+          language: whisperLang,
+        });
+      });
+    };
+
+    recorder.onerror = () => { stopStt(); };
+
+    recorder.start(STT_CHUNK_MS);
+    sttMediaRecorder = recorder;
     sttActive = true;
-    try { sttRecognition.start(); } catch (_) {}
 
     const bar = $("stt-live-bar");
     if (bar) bar.classList.remove("hidden");
     const btn = $("btn-stt");
     if (btn) btn.classList.add("active");
     const liveText = $("stt-live-text");
-    if (liveText) liveText.textContent = "Listening...";
+    if (liveText) liveText.textContent = "Listening (Whisper)...";
   }
 
   function stopStt() {
     sttActive = false;
-    if (sttRecognition) {
-      try { sttRecognition.stop(); } catch (_) {}
+    if (sttMediaRecorder && sttMediaRecorder.state !== "inactive") {
+      try { sttMediaRecorder.stop(); } catch (_) {}
     }
+    sttMediaRecorder = null;
+
     const bar = $("stt-live-bar");
     if (bar) bar.classList.add("hidden");
     const btn = $("btn-stt");
@@ -592,6 +576,48 @@
 
       if (!isSelf) enqueueSignTts(data.text, data.lang);
       flushTtsQueue();
+    });
+
+    /* ── Real-time voice captions from other users ── */
+    socket.on("caption:voice", (data) => {
+      const peerId = data.socketId;
+      if (!peerId) return;
+
+      // If this is our own transcription, show on local video + chat input
+      if (peerId === socket.id) {
+        const localSub = $("local-voice-subtitle");
+        if (localSub) {
+          localSub.textContent = data.text || "";
+          clearTimeout(localSub._clearTimer);
+          if (data.isFinal && data.text) {
+            localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 4000);
+          }
+        }
+        // Append final transcription to chat input
+        if (data.isFinal && data.text) {
+          const input = $("chat-input");
+          if (input) input.value += (input.value ? " " : "") + data.text.trim();
+        }
+        return;
+      }
+
+      const wrap = document.getElementById("remote-" + peerId);
+      if (!wrap) return;
+      let sub = wrap.querySelector(".remote-voice-subtitle");
+      if (!sub) {
+        sub = document.createElement("div");
+        sub.className = "video-subtitle remote-voice-subtitle";
+        sub.setAttribute("aria-live", "polite");
+        wrap.appendChild(sub);
+      }
+      sub.textContent = data.text || "";
+      // Clear final captions after a delay
+      clearTimeout(sub._clearTimer);
+      if (data.isFinal && data.text) {
+        sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 4000);
+      } else if (!data.text) {
+        sub.textContent = "";
+      }
     });
 
     socket.on("doc:processing", (d) => {
@@ -700,6 +726,9 @@
     localSpellDraft = "";
     renderLocalSignSubtitle();
     document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
+    document.querySelectorAll(".remote-voice-subtitle").forEach(n => { n.textContent = ""; });
+    const localVoiceSub = $("local-voice-subtitle");
+    if (localVoiceSub) localVoiceSub.textContent = "";
     resetDocPanel();
     syncDocHostUi();
     const dinput = $("doc-file-input");
@@ -729,6 +758,8 @@
     localSpellDraft = "";
     const locSub = $("local-sign-subtitle");
     if (locSub) locSub.textContent = "";
+    const locVoiceSub = $("local-voice-subtitle");
+    if (locVoiceSub) locVoiceSub.textContent = "";
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
     $("remote-videos").innerHTML = "";
@@ -1044,7 +1075,7 @@
         const input = ev.target;
         const f = input.files && input.files[0];
         input.value = "";
-        if (!f || !meetingState.isHost || !meetingState.code) return;
+        if (!f || !meetingState.code) return;
         try {
           meetingStatus("Uploading document...");
           const fd = new FormData();
@@ -1077,7 +1108,7 @@
     const btnNext = $("btn-slide-next");
     if (btnNext) btnNext.addEventListener("click", async () => { if (pdfDoc) await renderPdfPage(currentPage + 1); });
 
-    // NotebookLM-style Gemini Q&A
+    // NotebookLM-style Eazii Q&A
     const chatForm = $("doc-chat-form");
     if (chatForm) {
       chatForm.addEventListener("submit", async (ev) => {
@@ -1119,7 +1150,7 @@
             const err =
               data.message ||
               data.error ||
-              (res.status === 503 ? "Gemini not configured on server" : "") ||
+              (res.status === 503 ? "Eazii AI not configured on server" : "") ||
               res.statusText;
             throw new Error(err);
           }

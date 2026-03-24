@@ -22,6 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
+const WHISPER_URL = process.env.WHISPER_URL || "http://127.0.0.1:5555";
 
 /* Ensure uploads directory exists at startup */
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads"));
@@ -31,6 +32,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: true, credentials: true },
+  maxHttpBufferSize: 5e6, // 5 MB — enough for 4-second audio chunks
 });
 
 /** CORS for API calls — must be before all API routes */
@@ -206,6 +208,8 @@ io.on("connection", (socket) => {
       name: socket.user.name,
     });
 
+    // Emit user's private doc if they have one, otherwise shared room doc
+    meetingDoc.emitUserPayloadForOneSocket(io, socket, codeRaw).catch(() => {});
     meetingDoc.emitPayloadForOneSocket(io, socket, codeRaw).catch((err) => console.error("[doc emit]", err));
   });
 
@@ -243,6 +247,7 @@ io.on("connection", (socket) => {
         ? payload.preferredLanguage.trim().slice(0, 12)
         : "";
     socket.data.preferredLanguage = raw || "en";
+    meetingDoc.emitUserPayloadForOneSocket(io, socket, code).catch(() => {});
     meetingDoc.emitPayloadForOneSocket(io, socket, code).catch((err) => console.error("[doc emit]", err));
   });
 
@@ -278,6 +283,75 @@ io.on("connection", (socket) => {
       from: socket.user.name,
       socketId: socket.id,
     });
+  });
+
+  /* ── Real-time voice-to-text captions ── */
+  socket.on("caption:voice", (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const now = Date.now();
+    if (!socket.data.voiceCaptionLog) socket.data.voiceCaptionLog = [];
+    socket.data.voiceCaptionLog = socket.data.voiceCaptionLog.filter((t) => now - t < 1000);
+    if (socket.data.voiceCaptionLog.length >= 20) return;
+    socket.data.voiceCaptionLog.push(now);
+
+    const text = typeof payload?.text === "string" ? payload.text.slice(0, 1000) : "";
+    const isFinal = !!payload?.isFinal;
+    const lang = typeof payload?.lang === "string" ? payload.lang.slice(0, 16) : "";
+    socket.to(code).emit("caption:voice", {
+      text,
+      isFinal,
+      lang,
+      at: Date.now(),
+      from: socket.user.name,
+      socketId: socket.id,
+    });
+  });
+
+  /* ── Server-side Whisper transcription ── */
+  socket.on("audio:chunk", async (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+
+    // Socket.io delivers binary fields as Buffer in Node.js
+    const audioBuffer = payload?.audio;
+    if (!audioBuffer || !Buffer.isBuffer(audioBuffer)) return;
+    // Skip tiny payloads that are just silence headers
+    if (audioBuffer.length < 500) return;
+
+    const lang = typeof payload?.language === "string" ? payload.language.slice(0, 12) : "";
+
+    try {
+      const blob = new Blob([audioBuffer], { type: "audio/webm" });
+      const form = new FormData();
+      form.append("audio", blob, "chunk.webm");
+      if (lang) form.append("language", lang);
+
+      const resp = await fetch(`${WHISPER_URL}/transcribe`, {
+        method: "POST",
+        body: form,
+      });
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        console.error("[whisper] HTTP", resp.status, errText);
+        return;
+      }
+      const result = await resp.json();
+      const text = result.text || "";
+      if (!text.trim()) return;
+
+      // Emit transcription to the entire room (including sender)
+      io.to(code).emit("caption:voice", {
+        text: text.trim(),
+        isFinal: true,
+        lang: result.language || lang || "",
+        at: Date.now(),
+        from: socket.user.name,
+        socketId: socket.id,
+      });
+    } catch (err) {
+      console.error("[whisper]", err.message || err);
+    }
   });
 
   socket.on("room:end", async () => {

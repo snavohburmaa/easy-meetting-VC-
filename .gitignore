@@ -4,3 +4,6 @@ node_modules/
 uploads/
 ez-meeting.db
 SKILL.Md
+__pycache__/
+*.pyc
+.venv/
