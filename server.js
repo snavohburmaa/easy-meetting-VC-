@@ -17,6 +17,8 @@ import * as rooms from "./lib/rooms.js";
 import * as roomDocuments from "./lib/roomDocuments.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 import * as meetingDoc from "./lib/meetingDocumentPipeline.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { getKey, markLimited, isRateLimitError } from "./lib/geminiKeys.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -104,6 +106,48 @@ app.get("/api/qr/:code", async (req, res) => {
   } catch {
     res.status(500).send("QR failed");
   }
+});
+
+/** Language code to name map for Gemini prompt */
+const LANG_NAMES = {
+  en:"English",my:"Myanmar",th:"Thai",ja:"Japanese",zh:"Chinese",ko:"Korean",
+  fr:"French",de:"German",es:"Spanish",pt:"Portuguese",ru:"Russian",hi:"Hindi",
+  ar:"Arabic",vi:"Vietnamese",id:"Indonesian",tr:"Turkish",it:"Italian",
+  nl:"Dutch",pl:"Polish",uk:"Ukrainian",sv:"Swedish",ta:"Tamil",bn:"Bengali",
+  ms:"Malay",tl:"Filipino",
+};
+
+/** POST /api/translate { text, source, target } -> { translated } */
+app.post("/api/translate", async (req, res) => {
+  const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 1000) : "";
+  const source = typeof req.body?.source === "string" ? req.body.source.trim().slice(0, 10) : "auto";
+  const target = typeof req.body?.target === "string" ? req.body.target.trim().slice(0, 10) : "";
+  if (!text || !target) return res.status(400).json({ error: "text and target required" });
+  if (source === target) return res.json({ translated: text });
+
+  const targetName = LANG_NAMES[target] || target;
+  const prompt = `Translate the following text to ${targetName}. Return ONLY the translated text, nothing else.\n\n${text}`;
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+  // Try up to 3 different API keys from the pool
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const apiKey = getKey();
+    if (!apiKey) return res.status(503).json({ error: "No GEMINI_API_KEY configured" });
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const translated = result.response.text().trim();
+      return res.json({ translated });
+    } catch (err) {
+      if (isRateLimitError(err)) {
+        markLimited(apiKey, 60000);
+        continue; // try next key
+      }
+      return res.status(502).json({ error: "Translation failed", message: (err.message || "").slice(0, 200) });
+    }
+  }
+  return res.status(429).json({ error: "All API keys rate limited. Try again shortly." });
 });
 
 app.use(express.static(path.join(__dirname, "public")));

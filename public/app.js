@@ -15,7 +15,7 @@
 
   let docPdfBlobUrl = null;
   let pdfDoc = null;
-  let currentPage = 1;
+  let currentPage = 1
   let activeDocId = null;
 
   let sidebarOpen = false;
@@ -28,6 +28,10 @@
   let sttMediaRecorder = null;
   let sttActive = false;
   let sttChunkInterval = null;
+
+  // Subtitle settings
+  let subtitlesEnabled = false;
+  let subtitleLang = ""; // "" = original (no translation)
 
   // NotebookLM conversation history (client-side only)
   let notebookConversation = [];
@@ -423,6 +427,36 @@
     return d.innerHTML;
   }
 
+  // ── Subtitle translation helper ────────────────────────────
+  const _translateCache = new Map();
+  async function translateForSubtitle(text, sourceLang) {
+    if (!subtitleLang || !text.trim()) return text;
+    // Map Whisper lang codes (e.g. "en") to our target
+    const src = (sourceLang || "auto").split("-")[0] || "auto";
+    if (src === subtitleLang) return text;
+    const key = src + ":" + subtitleLang + ":" + text;
+    if (_translateCache.has(key)) return _translateCache.get(key);
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, source: src, target: subtitleLang }),
+      });
+      if (!res.ok) return text;
+      const data = await res.json();
+      const result = data.translated || text;
+      _translateCache.set(key, result);
+      // Keep cache small
+      if (_translateCache.size > 200) {
+        const first = _translateCache.keys().next().value;
+        _translateCache.delete(first);
+      }
+      return result;
+    } catch {
+      return text;
+    }
+  }
+
   // ── Voice-to-Text (Server-side Whisper) ─────────────────────
   const STT_CHUNK_MS = 4000; // send audio every 4 seconds
 
@@ -601,6 +635,9 @@
         return;
       }
 
+      // If subtitles are off, don't show remote captions
+      if (!subtitlesEnabled) return;
+
       const wrap = document.getElementById("remote-" + peerId);
       if (!wrap) return;
       let sub = wrap.querySelector(".remote-voice-subtitle");
@@ -610,10 +647,22 @@
         sub.setAttribute("aria-live", "polite");
         wrap.appendChild(sub);
       }
+
+      // Show original text immediately
       sub.textContent = data.text || "";
-      // Clear final captions after a delay
       clearTimeout(sub._clearTimer);
-      if (data.isFinal && data.text) {
+
+      // If user selected a different language, translate async
+      if (subtitleLang && data.text && data.isFinal) {
+        const srcLang = data.lang || "auto";
+        translateForSubtitle(data.text, srcLang).then((translated) => {
+          if (translated !== data.text) {
+            sub.textContent = translated;
+          }
+          clearTimeout(sub._clearTimer);
+          sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 5000);
+        });
+      } else if (data.isFinal && data.text) {
         sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 4000);
       } else if (!data.text) {
         sub.textContent = "";
@@ -772,6 +821,8 @@
     const qr = $("qr-img"); if (qr) qr.removeAttribute("src");
     closeSidebar();
     const hsBar = $("hand-sign-bar"); if(hsBar) hsBar.style.display = "none";
+    const sp = $("settings-popup"); if (sp) sp.classList.add("hidden");
+    const sb = $("btn-settings"); if (sb) sb.classList.remove("active");
     micMuted = false; camMuted = false;
   }
 
@@ -1001,6 +1052,44 @@
       const btn = $("btn-toggle-handsign-bar");
       if (btn) btn.classList.toggle("active", isHidden);
     });
+
+    // Settings popup
+    const settingsBtn = $("btn-settings");
+    const settingsPopup = $("settings-popup");
+    if (settingsBtn && settingsPopup) {
+      settingsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        settingsPopup.classList.toggle("hidden");
+        settingsBtn.classList.toggle("active", !settingsPopup.classList.contains("hidden"));
+      });
+      // Close popup when clicking outside
+      document.addEventListener("click", (e) => {
+        if (!settingsPopup.contains(e.target) && e.target !== settingsBtn) {
+          settingsPopup.classList.add("hidden");
+          settingsBtn.classList.remove("active");
+        }
+      });
+    }
+
+    // Subtitle toggle
+    const subtitleToggle = $("toggle-subtitles");
+    if (subtitleToggle) {
+      subtitleToggle.addEventListener("change", () => {
+        subtitlesEnabled = subtitleToggle.checked;
+        // Clear existing remote subtitles when turning off
+        if (!subtitlesEnabled) {
+          document.querySelectorAll(".remote-voice-subtitle").forEach(el => { el.textContent = ""; });
+        }
+      });
+    }
+
+    // Subtitle language
+    const subtitleLangSel = $("subtitle-lang-select");
+    if (subtitleLangSel) {
+      subtitleLangSel.addEventListener("change", () => {
+        subtitleLang = subtitleLangSel.value;
+      });
+    }
 
     // Chat form
     $("form-chat").addEventListener("submit", (ev) => {
