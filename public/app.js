@@ -1,6 +1,7 @@
 (function () {
   const TOKEN_KEY = "ezmeeting_token";
   const AUTH_TYPE_KEY = "ezmeeting_auth_type"; // "jwt"
+  const RECEIVE_LANG_KEY = "ezmeeting_receive_lang";
 
 const RecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
   
@@ -48,7 +49,7 @@ if (socket && socket.connected) {
     lang: recognition.lang || "en-US",
     at: Date.now()
   });
-  console.log("[STT] emitted", sentence);
+  console.log("[STT] emitted",socket.id , sentence);
 }
     };
 
@@ -84,6 +85,7 @@ if (socket && socket.connected) {
   let localSpellDraft = "";
   const ttsPending = [];
   const MAX_TTS_QUEUED = 3;
+  const sttSubtitleTimers = new Map();
 
   let docPdfBlobUrl = null;
   let pdfDoc = null;
@@ -117,6 +119,16 @@ if (socket && socket.connected) {
   function clearToken()  { localStorage.removeItem(TOKEN_KEY); }
   function getAuthType() { return localStorage.getItem(AUTH_TYPE_KEY) || "jwt"; }
   function setAuthType(t) { localStorage.setItem(AUTH_TYPE_KEY, t); }
+  function normalizeReceiveLang(code) {
+    const c = typeof code === "string" ? code.trim().toLowerCase() : "";
+    return /^[a-z]{2}$/.test(c) ? c : "en";
+  }
+  function getReceiveLang() {
+    return normalizeReceiveLang(localStorage.getItem(RECEIVE_LANG_KEY) || "en");
+  }
+  function setReceiveLang(code) {
+    localStorage.setItem(RECEIVE_LANG_KEY, normalizeReceiveLang(code));
+  }
 
 
   // ── View management ──────────────────────────────────────────
@@ -181,6 +193,8 @@ if (socket && socket.connected) {
     if (btn) btn.classList.toggle("active", sidebarOpen && activeSidebarTab === "chat");
     const docBtn = $("btn-open-doc");
     if (docBtn) docBtn.classList.toggle("active", sidebarOpen && activeSidebarTab === "doc");
+    const langBtn = $("btn-open-language");
+    if (langBtn) langBtn.classList.toggle("active", sidebarOpen && activeSidebarTab === "chat");
   }
 
   // ── Insight tabs ─────────────────────────────────────────────
@@ -296,6 +310,46 @@ if (socket && socket.connected) {
     if (data.translatedText) line += " · " + data.translatedText;
     const kind = data.kind && data.kind !== "gesture" ? " [" + data.kind + "]" : "";
     sub.textContent = line ? line + kind : "";
+  }
+
+  function clearSttSubtitleTimer(key) {
+    const t = sttSubtitleTimers.get(key);
+    if (t) {
+      clearTimeout(t);
+      sttSubtitleTimers.delete(key);
+    }
+  }
+
+  function scheduleSttSubtitleClear(key, el) {
+    if (!el) return;
+    clearSttSubtitleTimer(key);
+    const t = setTimeout(() => {
+      el.textContent = "";
+      sttSubtitleTimers.delete(key);
+    }, 5000);
+    sttSubtitleTimers.set(key, t);
+  }
+
+  function sttSubtitleText(data) {
+    let line = data && data.text ? String(data.text) : "";
+    if (data && data.translatedText) line += ` → ${data.translatedText}`;
+    return line;
+  }
+
+  function setLocalSttSubtitle(data) {
+    const el = $("local-stt-subtitle");
+    if (!el) return;
+    el.textContent = sttSubtitleText(data);
+    scheduleSttSubtitleClear("local", el);
+  }
+
+  function setRemoteSttSubtitle(peerId, data) {
+    const wrap = document.getElementById("remote-" + peerId);
+    if (!wrap) return;
+    const sub = wrap.querySelector(".remote-stt-subtitle");
+    if (!sub) return;
+    sub.textContent = sttSubtitleText(data);
+    scheduleSttSubtitleClear("remote:" + peerId, sub);
   }
 
   // ── TTS ──────────────────────────────────────────────────────
@@ -425,9 +479,10 @@ if (socket && socket.connected) {
   }
 
   function emitDocLanguage() {
-    const sel = $("doc-lang-select");
+    const sel = $("recv-lang-select") || $("doc-lang-select");
     if (!socket || !socket.connected || !sel) return;
-    socket.emit("doc:setLanguage", { preferredLanguage: sel.value });
+    const lang = normalizeReceiveLang(sel.value);
+    socket.emit("doc:setLanguage", { preferredLanguage: lang });
   }
 
   function applyDocPayload(d) {
@@ -679,24 +734,13 @@ if (socket && socket.connected) {
     });
 
     socket.on("stt:message", (data) => {
-  const { text, lang, at } = data;
-  console.log("[STT MESSAGE]", data);
-
-  const t = new Date(at).toLocaleTimeString();
-
-  // show in chat
-  const chat = $("chat-log");
-  if (chat) {
-    const line = document.createElement("div");
-    line.className = "stt-chat-line";
-    line.textContent = `[Voice] [${t}] ${text}`;
-    chat.appendChild(line);
-    chat.scrollTop = chat.scrollHeight;
-  }
-
-  // OPTIONAL: show subtitle on video
-  // You can reuse your subtitle system
-});
+      const isSelf = socket && data.socketId === socket.id;
+      if (isSelf) {
+        setLocalSttSubtitle(data);
+      } else if (data.socketId) {
+        setRemoteSttSubtitle(data.socketId, data);
+      }
+    });
 
     socket.on("doc:ready", (d) => {
       const st = $("doc-status");
@@ -757,11 +801,15 @@ if (socket && socket.connected) {
         const sub = document.createElement("div");
         sub.className = "video-subtitle remote-sign-subtitle";
         sub.setAttribute("aria-live", "polite");
+        const sttSub = document.createElement("div");
+        sttSub.className = "video-subtitle stt-subtitle remote-stt-subtitle";
+        sttSub.setAttribute("aria-live", "polite");
         const lab = document.createElement("span");
         lab.className = "label";
         lab.textContent = remoteName || "Guest";
         wrap.appendChild(vid);
         wrap.appendChild(sub);
+        wrap.appendChild(sttSub);
         wrap.appendChild(lab);
         $("remote-videos").appendChild(wrap);
       }
@@ -773,6 +821,7 @@ if (socket && socket.connected) {
   }
 
   function removePeer(peerId) {
+    clearSttSubtitleTimer("remote:" + peerId);
     const peer = peers.get(peerId);
     if (peer) { try { peer.destroy(); } catch (_) {} peers.delete(peerId); }
     const wrap = document.getElementById("remote-" + peerId);
@@ -796,6 +845,10 @@ if (socket && socket.connected) {
     localSpellDraft = "";
     renderLocalSignSubtitle();
     document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
+    const localStt = $("local-stt-subtitle");
+    if (localStt) localStt.textContent = "";
+    document.querySelectorAll(".remote-stt-subtitle").forEach(n => { n.textContent = ""; });
+    clearSttSubtitleTimer("local");
     resetDocPanel();
     syncDocHostUi();
     const dinput = $("doc-file-input");
@@ -825,6 +878,10 @@ if (socket && socket.connected) {
     localSpellDraft = "";
     const locSub = $("local-sign-subtitle");
     if (locSub) locSub.textContent = "";
+    const localStt = $("local-stt-subtitle");
+    if (localStt) localStt.textContent = "";
+    sttSubtitleTimers.forEach((t) => clearTimeout(t));
+    sttSubtitleTimers.clear();
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
     $("remote-videos").innerHTML = "";
@@ -885,13 +942,14 @@ if (socket && socket.connected) {
     if (code.length < 4) { $("lobby-error").textContent = "Enter a valid meeting code."; return; }
     clearLobbyError();
     busy = true;
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    } catch (e) {
-      busy = false;
-      $("lobby-error").textContent = "Camera/microphone access is required.";
-      return;
-    }
+    // try {
+    //   localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    // } catch (e) {
+    //   busy = false;
+    //   console.warn("Media access error", e);
+    //   $("lobby-error").textContent = "Camera/microphone access is required.";
+    //   return;
+    // }
     const token = getToken();
     if (!token) { busy = false; showView("login"); return; }
 
@@ -1058,6 +1116,18 @@ if (socket && socket.connected) {
       updateControlIcons();
     });
 
+    const langBtn = $("btn-open-language");
+    if (langBtn) {
+      langBtn.addEventListener("click", () => {
+        openSidebar("chat");
+        const sel = $("recv-lang-select");
+        if (sel) sel.focus();
+        meetingStatus("Set your receive language for incoming voice translations.");
+        setTimeout(() => meetingStatus(""), 3000);
+        updateControlIcons();
+      });
+    }
+
     $("btn-toggle-handsign-bar").addEventListener("click", () => {
       const bar = $("hand-sign-bar");
       if (!bar) return;
@@ -1132,6 +1202,15 @@ if (socket && socket.connected) {
     // Doc language
     const docLang = $("doc-lang-select");
     if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
+    const recvLang = $("recv-lang-select");
+    if (recvLang) {
+      recvLang.value = getReceiveLang();
+      recvLang.addEventListener("change", () => {
+        recvLang.value = normalizeReceiveLang(recvLang.value);
+        setReceiveLang(recvLang.value);
+        emitDocLanguage();
+      });
+    }
 
     // Doc file upload
     const docFile = $("doc-file-input");
@@ -1248,6 +1327,8 @@ if (socket && socket.connected) {
   async function boot() {
     wireEvents();
     initStt();
+    const recvLang = $("recv-lang-select");
+    if (recvLang) recvLang.value = getReceiveLang();
 
     // Check for existing session
     const token = getToken();

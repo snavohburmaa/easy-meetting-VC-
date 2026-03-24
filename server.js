@@ -4,6 +4,7 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 /* Prevent unhandled rejections from crashing the process */
 process.on("unhandledRejection", (err) => {
@@ -17,11 +18,20 @@ import * as rooms from "./lib/rooms.js";
 import * as roomDocuments from "./lib/roomDocuments.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 import * as meetingDoc from "./lib/meetingDocumentPipeline.js";
+import { normalizeTargetLang } from "./lib/detectLanguage.js";
+import { translateTextWithRetry } from "./lib/translate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3001;
+const LT_URL = process.env.LIBRETRANSLATE_URL || "https://libretranslate.com";
+const LT_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const STT_TRANSLATION_CACHE_MAX = 500;
+const sttTranslationCache = new Map();
+const geminiClient = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 /* Ensure uploads directory exists at startup */
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads"));
@@ -61,6 +71,50 @@ function joinUrlFromSocket(socket, code) {
   const host = socket.handshake.headers?.host || `localhost:${PORT}`;
   const proto = socket.handshake.headers["x-forwarded-proto"] || "http";
   return `${proto}://${host}/?join=${encodeURIComponent(code)}`;
+}
+
+async function translateSttIfNeeded(text, sourceLang, targetLang) {
+  const sourceRaw = typeof sourceLang === "string" ? sourceLang.trim().toLowerCase() : "";
+  const source = /^[a-z]{2}(-[a-z]{2})?$/i.test(sourceRaw) ? sourceRaw.split("-")[0] : "auto";
+  const target = normalizeTargetLang(targetLang || "en");
+  if (!text || !text.trim() || (source !== "auto" && source === target)) return "";
+
+  const key = `${source}|${target}|${text}`;
+  if (sttTranslationCache.has(key)) return sttTranslationCache.get(key);
+
+  try {
+    const translated = await translateTextWithRetry(
+      text,
+      source || "auto",
+      target,
+      LT_URL,
+      LT_KEY
+    );
+    sttTranslationCache.set(key, translated || "");
+    if (sttTranslationCache.size > STT_TRANSLATION_CACHE_MAX) {
+      const oldest = sttTranslationCache.keys().next().value;
+      sttTranslationCache.delete(oldest);
+    }
+    return translated || "";
+  } catch {
+    if (!geminiClient) return "";
+    try {
+      const model = geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
+      const sourceHint = source === "auto" ? "auto-detect source language" : `source language is ${source}`;
+      const prompt = `Translate this speech transcript to ${target}. ${sourceHint}. Return only the translated text, no explanations.\n\nText:\n${text}`;
+      const result = await model.generateContent(prompt);
+      const translated = result?.response?.text ? String(result.response.text()).trim() : "";
+      if (!translated) return "";
+      sttTranslationCache.set(key, translated);
+      if (sttTranslationCache.size > STT_TRANSLATION_CACHE_MAX) {
+        const oldest = sttTranslationCache.keys().next().value;
+        sttTranslationCache.delete(oldest);
+      }
+      return translated;
+    } catch {
+      return "";
+    }
+  }
 }
 
 /** GET /api/health */
@@ -173,41 +227,78 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("room:join", (payload, ack) => {
-    const codeRaw = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
-    if (!/^[A-Z0-9]{4,12}$/.test(codeRaw)) {
-      if (typeof ack === "function") ack({ error: "invalid_code" });
-      return;
-    }
-    if (socket.data.roomCode) {
-      if (typeof ack === "function") ack({ error: "already_in_room" });
-      return;
-    }
-    const r = rooms.joinRoom(codeRaw, socket.id);
-    if (!r.ok) {
-      if (typeof ack === "function") ack({ error: "not_found" });
-      return;
-    }
-    socket.join(codeRaw);
-    socket.data.roomCode = codeRaw;
-    rooms.setParticipantMeta(codeRaw, socket.id, socket.user);
-    const peerList = rooms.listPeers(codeRaw, socket.id);
-    const host = rooms.isHost(codeRaw, socket.id);
-    if (typeof ack === "function") {
-      ack({
-        code: codeRaw,
-        joinUrl: joinUrlFromSocket(socket, codeRaw),
-        peers: peerList,
-        isHost: host,
-      });
-    }
-    socket.to(codeRaw).emit("peer:joined", {
-      peerId: socket.id,
-      name: socket.user.name,
-    });
+  // socket.on("room:join", (payload, ack) => {
+  //   const codeRaw = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
+  //   if (!/^[A-Z0-9]{4,12}$/.test(codeRaw)) {
+  //     if (typeof ack === "function") ack({ error: "invalid_code" });
+  //     return;
+  //   }
+  //   if (socket.data.roomCode) {
+  //     if (typeof ack === "function") ack({ error: "already_in_room" });
+  //     return;
+  //   }
+  //   const r = rooms.joinRoom(codeRaw, socket.id);
+  //   if (!r.ok) {
+  //     if (typeof ack === "function") ack({ error: "not_found" });
+  //     return;
+  //   }
+  //   socket.join(codeRaw);
+  //   socket.data.roomCode = codeRaw;
+  //   rooms.setParticipantMeta(codeRaw, socket.id, socket.user);
+  //   const peerList = rooms.listPeers(codeRaw, socket.id);
+  //   const host = rooms.isHost(codeRaw, socket.id);
+  //   if (typeof ack === "function") {
+  //     ack({
+  //       code: codeRaw,
+  //       joinUrl: joinUrlFromSocket(socket, codeRaw),
+  //       peers: peerList,
+  //       isHost: host,
+  //     });
+  //   }
+  //   socket.to(codeRaw).emit("peer:joined", {
+  //     peerId: socket.id,
+  //     name: socket.user.name,
+  //   });
 
-    meetingDoc.emitPayloadForOneSocket(io, socket, codeRaw).catch((err) => console.error("[doc emit]", err));
+  //   meetingDoc.emitPayloadForOneSocket(io, socket, codeRaw).catch((err) => console.error("[doc emit]", err));
+  // });
+
+  socket.on("room:join", (payload, ack) => {
+  const codeRaw = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
+
+  if (!/^[A-Z0-9]{4,12}$/.test(codeRaw)) {
+    if (typeof ack === "function") ack({ error: "invalid_code" });
+    return;
+  }
+  if (socket.data.roomCode) {
+    if (typeof ack === "function") ack({ error: "already_in_room" });
+    return;
+  }
+  const r = rooms.joinRoom(codeRaw, socket.id);
+  if (!r.ok) {
+    if (typeof ack === "function") ack({ error: "not_found" });
+    return;
+  }
+  socket.join(codeRaw);
+  socket.data.roomCode = codeRaw;
+  rooms.setParticipantMeta(codeRaw, socket.id, socket.user);
+  const peerList = rooms.listPeers(codeRaw, socket.id);
+  const host = rooms.isHost(codeRaw, socket.id);
+  if (typeof ack === "function") {
+    ack({
+      code: codeRaw,
+      joinUrl: joinUrlFromSocket(socket, codeRaw),
+      peers: peerList,
+      isHost: host,
+    });
+  }
+  socket.to(codeRaw).emit("peer:joined", {
+    peerId: socket.id,
+    name: socket.user.name,
   });
+
+  meetingDoc.emitPayloadForOneSocket(io, socket, codeRaw).catch((err) => console.error("[doc emit]", err));
+});
 
   socket.on("signal", (payload) => {
     const targetId = typeof payload?.targetId === "string" ? payload.targetId : "";
@@ -231,6 +322,38 @@ io.on("connection", (socket) => {
       from: socket.user.name,
       socketId: socket.id,
     });
+  });
+
+  socket.on("stt:message", async (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const text = typeof payload?.text === "string" ? payload.text.slice(0, 2000) : "";
+    if (!text.trim()) return;
+    const lang = typeof payload?.lang === "string" ? payload.lang.slice(0, 32) : "";
+    const cleanText = text.trim();
+    const sourceLangRaw = typeof lang === "string" ? lang.trim().toLowerCase() : "";
+    const sourceLang = /^[a-z]{2}(-[a-z]{2})?$/i.test(sourceLangRaw)
+      ? sourceLangRaw.split("-")[0]
+      : "auto";
+    const at = Date.now();
+    const roomSockets = await io.in(code).fetchSockets();
+
+    await Promise.all(roomSockets.map(async (recipient) => {
+      const preferred = normalizeTargetLang(recipient.data.preferredLanguage || "en");
+      const translatedText =
+        preferred === sourceLang
+          ? ""
+          : await translateSttIfNeeded(cleanText, sourceLang, preferred);
+
+      recipient.emit("stt:message", {
+        text: cleanText,
+        lang: lang || undefined,
+        translatedText: translatedText || undefined,
+        at,
+        from: socket.user.name,
+        socketId: socket.id,
+      });
+    }));
   });
 
   const SIGN_KINDS = new Set(["gesture", "spell", "model"]);
