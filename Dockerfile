@@ -1,29 +1,28 @@
-FROM python:3.11-slim
+FROM node:20-slim
 
-# Install Node.js 20, ffmpeg (required by Whisper), and curl
+# Install Python3, pip, ffmpeg, curl
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ffmpeg && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg curl && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
 
 WORKDIR /app
 
-# Install Python dependencies (Whisper + Flask)
+# Python deps in venv (faster-whisper uses CTranslate2, no PyTorch needed)
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m venv .venv && \
+    .venv/bin/pip install --no-cache-dir -r requirements.txt && \
+    find .venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; true
 
-# Install Node.js dependencies
+# Node deps
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy application code
+# App code
 COPY . .
 
-# Pre-download Whisper model at build time so startup is fast
-ARG WHISPER_MODEL=base
-ENV WHISPER_MODEL=${WHISPER_MODEL}
-RUN python -c "import whisper; whisper.load_model('${WHISPER_MODEL}')"
+# Pre-download tiny Whisper model (~75MB) at build time
+ENV WHISPER_MODEL=tiny
+RUN .venv/bin/python3 -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
 
 RUN chmod +x start.sh
 

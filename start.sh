@@ -2,7 +2,7 @@
 set -e
 
 echo "[start] Launching Whisper service..."
-python whisper_service.py &
+.venv/bin/python3 whisper_service.py &
 WHISPER_PID=$!
 
 # Wait for Whisper to be ready

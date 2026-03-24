@@ -6,14 +6,14 @@ Runs alongside the Node.js server on the same Railway instance.
 
 import os
 import tempfile
-import whisper
+from faster_whisper import WhisperModel
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
 print(f"[whisper] Loading model: {MODEL_SIZE} ...")
-model = whisper.load_model(MODEL_SIZE)
+model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
 print(f"[whisper] Model loaded.")
 
 
@@ -32,13 +32,10 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        options = {}
-        if language and language != "auto":
-            options["language"] = language
-
-        result = model.transcribe(tmp_path, **options)
-        text = result.get("text", "").strip()
-        detected_lang = result.get("language", "")
+        lang = language if (language and language != "auto") else None
+        segments, info = model.transcribe(tmp_path, language=lang)
+        text = " ".join(segment.text for segment in segments).strip()
+        detected_lang = info.language if info else ""
         return jsonify({"text": text, "language": detected_lang})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
