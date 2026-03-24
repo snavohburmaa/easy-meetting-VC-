@@ -28,6 +28,7 @@ if ("serviceWorker" in navigator) {
 
   let micMuted = false;
   let camMuted = false;
+  let facingMode = "user"; // "user" = front, "environment" = back
 
   // Voice-to-text state (server-side Whisper)
   let sttMediaRecorder = null;
@@ -182,6 +183,52 @@ if ("serviceWorker" in navigator) {
       btn.classList.toggle("muted-state", muted);
       btn.title = muted ? "Turn on camera" : "Turn off camera";
       renderIcons();
+    }
+  }
+
+  // ── Switch camera (front/back) ───────────────────────────────
+  async function switchCamera() {
+    if (!localStream) return;
+    facingMode = facingMode === "user" ? "environment" : "user";
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode },
+        audio: true,
+      });
+      // Replace video track in local stream and all peer connections
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      const oldVideoTrack = localStream.getVideoTracks()[0];
+      if (oldVideoTrack) oldVideoTrack.stop();
+      localStream.removeTrack(oldVideoTrack);
+      localStream.addTrack(newVideoTrack);
+      // Update local video element
+      const v = $("local-video");
+      if (v) v.srcObject = localStream;
+      // Mirror: front camera mirrored, back camera normal
+      if (v) v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
+      // Replace track in all peer connections
+      peers.forEach((peer) => {
+        try {
+          // simple-peer exposes replaceTrack on newer versions
+          if (typeof peer.replaceTrack === "function") {
+            peer.replaceTrack(oldVideoTrack, newVideoTrack, localStream);
+          } else {
+            const pc = peer._pc;
+            if (pc) {
+              const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+              if (sender) sender.replaceTrack(newVideoTrack);
+            }
+          }
+        } catch (_) {}
+      });
+      // Stop the new audio track since we keep the old one
+      newStream.getAudioTracks().forEach(t => t.stop());
+      // Re-apply cam muted state
+      if (camMuted) newVideoTrack.enabled = false;
+    } catch (e) {
+      console.warn("Camera switch failed", e);
+      // Revert facing mode
+      facingMode = facingMode === "user" ? "environment" : "user";
     }
   }
 
@@ -818,8 +865,9 @@ if ("serviceWorker" in navigator) {
     peers.clear();
     $("remote-videos").innerHTML = "";
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    facingMode = "user";
     const lv = $("local-video");
-    if (lv) lv.srcObject = null;
+    if (lv) { lv.srcObject = null; lv.style.transform = ""; }
     if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }
     busy = false;
     meetingStatus("");
@@ -1037,6 +1085,13 @@ if ("serviceWorker" in navigator) {
 
     $("btn-toggle-mic").addEventListener("click", () => setMicMuted(!micMuted));
     $("btn-toggle-cam").addEventListener("click", () => setCamMuted(!camMuted));
+    $("btn-switch-cam").addEventListener("click", () => switchCamera());
+
+    // Mobile sidebar close & leave buttons
+    const sidebarCloseBtn = $("btn-sidebar-close");
+    if (sidebarCloseBtn) sidebarCloseBtn.addEventListener("click", () => closeSidebar());
+    const sidebarLeaveBtn = $("btn-sidebar-leave");
+    if (sidebarLeaveBtn) sidebarLeaveBtn.addEventListener("click", () => { closeSidebar(); leaveMeeting(); });
 
     $("btn-toggle-sidebar").addEventListener("click", () => {
       toggleSidebar("chat");
@@ -1076,14 +1131,19 @@ if ("serviceWorker" in navigator) {
       });
     }
 
-    // Subtitle toggle
+    // Subtitle toggle — also auto-start/stop STT
     const subtitleToggle = $("toggle-subtitles");
     if (subtitleToggle) {
       subtitleToggle.addEventListener("change", () => {
         subtitlesEnabled = subtitleToggle.checked;
-        // Clear existing remote subtitles when turning off
-        if (!subtitlesEnabled) {
+        if (subtitlesEnabled) {
+          // Auto-start voice recognition if not already active
+          if (!sttActive) startStt();
+        } else {
+          // Clear existing remote subtitles when turning off
           document.querySelectorAll(".remote-voice-subtitle").forEach(el => { el.textContent = ""; });
+          const localVSub = $("local-voice-subtitle");
+          if (localVSub) localVSub.textContent = "";
         }
       });
     }

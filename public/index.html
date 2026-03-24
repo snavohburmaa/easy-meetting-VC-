@@ -251,6 +251,16 @@
 
         <!-- Sidebar (chat + document + signs) -->
         <div class="meeting-sidebar sidebar-hidden" id="meeting-sidebar">
+          <div class="sidebar-mobile-header">
+            <button type="button" id="btn-sidebar-leave" class="danger small">
+              <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+              Leave
+            </button>
+            <button type="button" id="btn-sidebar-close" class="secondary small">
+              <i data-lucide="x" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+              Close
+            </button>
+          </div>
           <div class="sidebar-tabs">
             <button class="sidebar-tab active" id="sidebar-tab-chat" data-tab="chat">
               <i data-lucide="message-square" style="width:14px;height:14px;"></i>
@@ -379,6 +389,12 @@
               <i data-lucide="camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
             </button>
             <span>Camera</span>
+          </div>
+          <div class="control-label">
+            <button type="button" id="btn-switch-cam" class="icon-btn" title="Switch camera">
+              <i data-lucide="switch-camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+            </button>
+            <span>Flip</span>
           </div>
           <div class="control-label">
             <button type="button" id="btn-toggle-handsign-bar" class="icon-btn" title="Hand-sign captions">

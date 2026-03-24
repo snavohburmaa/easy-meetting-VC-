@@ -573,6 +573,7 @@ main { position: relative; }
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform: scaleX(-1);
 }
 
 .remote-videos {
@@ -618,6 +619,7 @@ main { position: relative; }
   max-height: 4em;
   overflow: hidden;
   pointer-events: none;
+  z-index: 5;
 }
 .video-subtitle:empty { display: none; }
 .video-subtitle .sign-draft { display: block; opacity: 0.85; font-size: 0.67rem; margin-top: 0.15rem; }
@@ -634,6 +636,12 @@ main { position: relative; }
   text-align: center;
   padding: 0.3rem 0.6rem;
   line-height: 1.35;
+  z-index: 6;
+}
+
+/* ── Sidebar mobile header (leave + close) ── */
+.sidebar-mobile-header {
+  display: none;
 }
 
 /* ── Right sidebar panels (chat + doc) ── */
@@ -1425,14 +1433,28 @@ main { position: relative; }
   .controls-right button { font-size: 0.7rem; }
 
   .settings-popup {
+    position: fixed;
+    bottom: auto;
+    top: 50%;
     left: 50%;
-    transform: translateX(-50%);
+    transform: translate(-50%, -50%);
     min-width: 90vw;
     max-width: 95vw;
+    z-index: 300;
   }
 
-  .meeting-sidebar { width: 100% !important; max-width: 100vw; }
+  .meeting-sidebar { width: 100% !important; max-width: 100vw; z-index: 40; }
   .meeting-sidebar.sidebar-hidden { width: 0 !important; }
+
+  .sidebar-mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--surface-2);
+  }
 
   .chat-form input { font-size: 16px; }
   .chat-log { font-size: 0.8rem; }
