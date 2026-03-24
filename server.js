@@ -364,11 +364,13 @@ io.on("connection", (socket) => {
     if (audioBuffer.length < 500) return;
 
     const lang = typeof payload?.language === "string" ? payload.language.slice(0, 12) : "";
+    const ext = typeof payload?.ext === "string" ? payload.ext.slice(0, 5) : ".webm";
+    const filename = "chunk" + (ext.startsWith(".") ? ext : "." + ext);
 
     try {
-      const blob = new Blob([audioBuffer], { type: "audio/webm" });
+      const blob = new Blob([audioBuffer], { type: ext === ".mp4" ? "audio/mp4" : ext === ".ogg" ? "audio/ogg" : "audio/webm" });
       const form = new FormData();
-      form.append("audio", blob, "chunk.webm");
+      form.append("audio", blob, filename);
       if (lang) form.append("language", lang);
 
       const resp = await fetch(`${WHISPER_URL}/transcribe`, {

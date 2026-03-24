@@ -626,17 +626,20 @@ main { position: relative; }
 /* Voice-to-text subtitle — positioned above the sign subtitle */
 .voice-subtitle,
 .remote-voice-subtitle {
-  bottom: 50px;
-  background: rgba(99,102,241,0.85);
+  bottom: 32px;
+  background: rgba(0,0,0,0.82);
   border-radius: 6px;
   margin: 0 8px;
   left: 0; right: 0;
-  font-size: 0.78rem;
-  font-weight: 500;
+  font-size: 0.88rem;
+  font-weight: 600;
   text-align: center;
-  padding: 0.3rem 0.6rem;
-  line-height: 1.35;
+  padding: 0.4rem 0.75rem;
+  line-height: 1.4;
   z-index: 6;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  letter-spacing: 0.01em;
 }
 
 /* ── Sidebar mobile header (leave + close) ── */

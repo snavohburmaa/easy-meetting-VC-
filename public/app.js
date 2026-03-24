@@ -139,6 +139,14 @@ if ("serviceWorker" in navigator) {
   function initSidebarTabs() {
     document.querySelectorAll(".sidebar-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
+        // On mobile, tapping the already-active tab acts as "back to meeting".
+        const isSameTab = activeSidebarTab === btn.dataset.tab;
+        const isMobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+        if (sidebarOpen && isSameTab && isMobile) {
+          closeSidebar();
+          updateControlIcons();
+          return;
+        }
         if (!sidebarOpen) {
           openSidebar(btn.dataset.tab);
         } else {
@@ -198,18 +206,9 @@ if ("serviceWorker" in navigator) {
       // Replace video track in local stream and all peer connections
       const newVideoTrack = newStream.getVideoTracks()[0];
       const oldVideoTrack = localStream.getVideoTracks()[0];
-      if (oldVideoTrack) oldVideoTrack.stop();
-      localStream.removeTrack(oldVideoTrack);
-      localStream.addTrack(newVideoTrack);
-      // Update local video element
-      const v = $("local-video");
-      if (v) v.srcObject = localStream;
-      // Mirror: front camera mirrored, back camera normal
-      if (v) v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
-      // Replace track in all peer connections
+      // Replace track in all peer connections BEFORE stopping old track
       peers.forEach((peer) => {
         try {
-          // simple-peer exposes replaceTrack on newer versions
           if (typeof peer.replaceTrack === "function") {
             peer.replaceTrack(oldVideoTrack, newVideoTrack, localStream);
           } else {
@@ -221,6 +220,15 @@ if ("serviceWorker" in navigator) {
           }
         } catch (_) {}
       });
+      // Now stop old track and swap in local stream
+      if (oldVideoTrack) oldVideoTrack.stop();
+      localStream.removeTrack(oldVideoTrack);
+      localStream.addTrack(newVideoTrack);
+      // Update local video element
+      const v = $("local-video");
+      if (v) v.srcObject = localStream;
+      // Mirror: front camera mirrored, back camera normal
+      if (v) v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
       // Stop the new audio track since we keep the old one
       newStream.getAudioTracks().forEach(t => t.stop());
       // Re-apply cam muted state
@@ -257,6 +265,22 @@ if ("serviceWorker" in navigator) {
   }
 
   // ── Subtitle helpers ─────────────────────────────────────────
+  function setSubtitlesEnabled(enabled) {
+    subtitlesEnabled = !!enabled;
+    const subtitleToggle = $("toggle-subtitles");
+    if (subtitleToggle) subtitleToggle.checked = subtitlesEnabled;
+
+    if (subtitlesEnabled) {
+      if (!sttActive) startStt();
+      return;
+    }
+
+    // Hide all subtitle overlays when disabled
+    document.querySelectorAll(".remote-voice-subtitle").forEach((el) => { el.textContent = ""; });
+    const localVSub = $("local-voice-subtitle");
+    if (localVSub) localVSub.textContent = "";
+  }
+
   function renderLocalSignSubtitle() {
     const el = $("local-sign-subtitle");
     if (!el) return;
@@ -525,12 +549,10 @@ if ("serviceWorker" in navigator) {
     if (!audioTracks.length) { meetingStatus("No audio track found."); return; }
     const audioStream = new MediaStream(audioTracks);
 
-    let mimeType = "audio/webm;codecs=opus";
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = "audio/webm";
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = ""; // let the browser pick
+    // Pick best supported format (Safari uses mp4, Chrome uses webm)
+    let mimeType = "";
+    for (const mt of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]) {
+      if (MediaRecorder.isTypeSupported(mt)) { mimeType = mt; break; }
     }
 
     const recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
@@ -544,10 +566,13 @@ if ("serviceWorker" in navigator) {
       // Convert lang code like "en-US" -> "en" for Whisper
       const whisperLang = lang.split("-")[0] || "";
 
+      // Determine file extension from mime type for Whisper
+      const ext = mimeType.includes("mp4") ? ".mp4" : mimeType.includes("ogg") ? ".ogg" : ".webm";
       e.data.arrayBuffer().then((buf) => {
         socket.emit("audio:chunk", {
           audio: buf,
           language: whisperLang,
+          ext,
         });
       });
     };
@@ -672,12 +697,24 @@ if ("serviceWorker" in navigator) {
       // If this is our own transcription, show on local video + chat input
       if (peerId === socket.id) {
         const localSub = $("local-voice-subtitle");
-        if (localSub) {
+        if (localSub && subtitlesEnabled) {
           localSub.textContent = data.text || "";
           clearTimeout(localSub._clearTimer);
           if (data.isFinal && data.text) {
-            localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 4000);
+            // Translate local subtitle if language is set
+            if (subtitleLang) {
+              const srcLang = data.lang || "auto";
+              translateForSubtitle(data.text, srcLang).then((translated) => {
+                if (translated !== data.text) localSub.textContent = translated;
+                clearTimeout(localSub._clearTimer);
+                localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 5000);
+              });
+            } else {
+              localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 4000);
+            }
           }
+        } else if (localSub && !subtitlesEnabled) {
+          localSub.textContent = "";
         }
         // Append final transcription to chat input
         if (data.isFinal && data.text) {
@@ -837,6 +874,7 @@ if ("serviceWorker" in navigator) {
     if (socket && socket.connected) emitDocLanguage();
     setMicMuted(false);
     setCamMuted(false);
+    setSubtitlesEnabled(false);
   }
 
   async function stopHandSignCaptions() {
@@ -1089,9 +1127,24 @@ if ("serviceWorker" in navigator) {
 
     // Mobile sidebar close & leave buttons
     const sidebarCloseBtn = $("btn-sidebar-close");
-    if (sidebarCloseBtn) sidebarCloseBtn.addEventListener("click", () => closeSidebar());
+    if (sidebarCloseBtn) {
+      const onSidebarClose = (ev) => {
+        if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+        closeSidebar();
+      };
+      sidebarCloseBtn.addEventListener("click", onSidebarClose);
+      sidebarCloseBtn.addEventListener("touchend", onSidebarClose, { passive: false });
+    }
     const sidebarLeaveBtn = $("btn-sidebar-leave");
-    if (sidebarLeaveBtn) sidebarLeaveBtn.addEventListener("click", () => { closeSidebar(); leaveMeeting(); });
+    if (sidebarLeaveBtn) {
+      const onSidebarLeave = (ev) => {
+        if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+        closeSidebar();
+        leaveMeeting();
+      };
+      sidebarLeaveBtn.addEventListener("click", onSidebarLeave);
+      sidebarLeaveBtn.addEventListener("touchend", onSidebarLeave, { passive: false });
+    }
 
     $("btn-toggle-sidebar").addEventListener("click", () => {
       toggleSidebar("chat");
@@ -1134,18 +1187,17 @@ if ("serviceWorker" in navigator) {
     // Subtitle toggle — also auto-start/stop STT
     const subtitleToggle = $("toggle-subtitles");
     if (subtitleToggle) {
-      subtitleToggle.addEventListener("change", () => {
-        subtitlesEnabled = subtitleToggle.checked;
-        if (subtitlesEnabled) {
-          // Auto-start voice recognition if not already active
-          if (!sttActive) startStt();
-        } else {
-          // Clear existing remote subtitles when turning off
-          document.querySelectorAll(".remote-voice-subtitle").forEach(el => { el.textContent = ""; });
-          const localVSub = $("local-voice-subtitle");
-          if (localVSub) localVSub.textContent = "";
-        }
-      });
+      subtitleToggle.addEventListener("change", () => setSubtitlesEnabled(subtitleToggle.checked));
+
+      // Mobile Safari/webview resilience: allow tapping the full row text/icon area.
+      const subtitleRow = subtitleToggle.closest(".settings-row");
+      if (subtitleRow) {
+        subtitleRow.addEventListener("click", (ev) => {
+          if (ev.target === subtitleToggle) return;
+          subtitleToggle.checked = !subtitleToggle.checked;
+          setSubtitlesEnabled(subtitleToggle.checked);
+        });
+      }
     }
 
     // Subtitle language

@@ -25,8 +25,15 @@ def transcribe():
     audio_file = request.files["audio"]
     language = request.form.get("language", None)
 
-    # Write to a temp file so Whisper can read it
-    suffix = ".webm"
+    # Write to a temp file so Whisper/ffmpeg can read it
+    # Detect format from filename or content type (Safari sends mp4, Chrome sends webm)
+    orig_name = audio_file.filename or "chunk.webm"
+    if orig_name.endswith(".mp4") or orig_name.endswith(".m4a"):
+        suffix = ".mp4"
+    elif orig_name.endswith(".ogg"):
+        suffix = ".ogg"
+    else:
+        suffix = ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         audio_file.save(tmp)
         tmp_path = tmp.name

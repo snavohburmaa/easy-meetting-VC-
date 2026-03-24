@@ -20,12 +20,14 @@ RUN npm ci --omit=dev && npm cache clean --force
 # App code
 COPY . .
 
-# Pre-download tiny Whisper model (~75MB) at build time
+# Pre-download Whisper model at build time so deploy is instant
+# Use "tiny" for fast + low memory, "base" for better accuracy
 ENV WHISPER_MODEL=tiny
-RUN .venv/bin/python3 -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
+RUN .venv/bin/python3 -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
 
 RUN chmod +x start.sh
 
-EXPOSE 3000
+# Railway sets PORT dynamically — expose as a hint only
+EXPOSE ${PORT:-3000}
 
 CMD ["bash", "start.sh"]
