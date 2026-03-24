@@ -545,9 +545,10 @@ if ("serviceWorker" in navigator) {
   }
 
   function emitDocLanguage() {
-    const sel = $("recv-lang-select") || $("doc-lang-select");
+    // Use "To language" subtitle setting as preferred language for server-side translation
+    const sel = $("subtitle-lang-select") || $("recv-lang-select") || $("doc-lang-select");
     if (!socket || !socket.connected || !sel) return;
-    const lang = normalizeReceiveLang(sel.value);
+    const lang = normalizeReceiveLang(sel.value || "en");
     socket.emit("doc:setLanguage", { preferredLanguage: lang });
   }
 
@@ -675,10 +676,15 @@ if ("serviceWorker" in navigator) {
       if (!e.data || e.data.size === 0) return;
       if (!socket || !socket.connected) return;
 
+      // Use "From language" in settings as Whisper hint, fallback to STT lang select
+      const sourceSel = $("subtitle-source-lang-select");
       const langSel = $("stt-lang-select");
-      const lang = langSel ? langSel.value : "";
-      // Convert lang code like "en-US" -> "en" for Whisper
-      const whisperLang = lang.split("-")[0] || "";
+      const sourceLangVal = sourceSel ? sourceSel.value : "";
+      const sttLangVal = langSel ? langSel.value : "";
+      // If user picked a specific "From language" (not auto), use that
+      const whisperLang = (sourceLangVal && sourceLangVal !== "auto")
+        ? sourceLangVal
+        : (sttLangVal.split("-")[0] || "");
 
       // Determine file extension from mime type for Whisper
       const ext = mimeType.includes("mp4") ? ".mp4" : mimeType.includes("ogg") ? ".ogg" : ".webm";
@@ -805,11 +811,17 @@ if ("serviceWorker" in navigator) {
 
     /* ── Real-time translated STT subtitles ── */
     socket.on("stt:message", (data) => {
+      if (!subtitlesEnabled) return;
       const isSelf = socket && data.socketId === socket.id;
       if (isSelf) {
         setLocalSttSubtitle(data);
       } else if (data.socketId) {
         setRemoteSttSubtitle(data.socketId, data);
+      }
+      // Show in global subtitle bar at bottom of screen
+      const displayText = data.translatedText || data.text || "";
+      if (displayText) {
+        showGlobalSubtitle(displayText, data.lang || "auto", data.from || (isSelf ? "You" : "Participant"));
       }
     });
 
@@ -1351,12 +1363,21 @@ if ("serviceWorker" in navigator) {
       }
     }
 
-    // Subtitle translation: from language
+    // Subtitle translation: from language (also syncs STT speech language)
     const subtitleSourceSel = $("subtitle-source-lang-select");
     if (subtitleSourceSel) {
       subtitleSourceSel.value = subtitleSourceLang;
       subtitleSourceSel.addEventListener("change", () => {
         subtitleSourceLang = subtitleSourceSel.value || "auto";
+        // Sync STT lang select so Whisper uses the right language
+        const sttSel = $("stt-lang-select");
+        if (sttSel && subtitleSourceLang !== "auto") {
+          // Map 2-letter code to locale code used in stt-lang-select (e.g. "my" -> "my-MM")
+          const opt = [...sttSel.options].find(o => o.value.startsWith(subtitleSourceLang));
+          if (opt) sttSel.value = opt.value;
+        }
+        // Restart STT if active so Whisper picks up new language
+        if (sttActive) { stopStt(); startStt(); }
       });
     }
 
@@ -1366,6 +1387,8 @@ if ("serviceWorker" in navigator) {
       subtitleLangSel.value = subtitleLang;
       subtitleLangSel.addEventListener("change", () => {
         subtitleLang = subtitleLangSel.value;
+        // Tell server our preferred receive language for stt:message translation
+        if (socket && socket.connected) emitDocLanguage();
       });
     }
 
