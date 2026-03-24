@@ -331,30 +331,25 @@ if ("serviceWorker" in navigator) {
   }
 
   function hideGlobalSubtitle() {
-    const bar = $("global-subtitle-bar");
-    const meta = $("global-subtitle-meta");
-    const text = $("global-subtitle-text");
-    if (!bar || !meta || !text) return;
-    meta.textContent = "";
-    text.textContent = "";
-    clearTimeout(bar._clearTimer);
-    bar.classList.add("hidden");
+    const meta = $("qr-subtitle-meta");
+    const text = $("qr-subtitle-text");
+    if (meta) meta.textContent = "";
+    if (text) text.textContent = "";
+    clearTimeout(hideGlobalSubtitle._timer);
   }
 
-  function showGlobalSubtitle(text, sourceLang, speaker) {
-    const bar = $("global-subtitle-bar");
-    const meta = $("global-subtitle-meta");
-    const textEl = $("global-subtitle-text");
-    if (!bar || !meta || !textEl) return;
-    if (!subtitlesEnabled || !text) { hideGlobalSubtitle(); return; }
+  function showGlobalSubtitle(displayText, sourceLang, speaker) {
+    const meta = $("qr-subtitle-meta");
+    const textEl = $("qr-subtitle-text");
+    if (!meta || !textEl) return;
+    if (!subtitlesEnabled || !displayText) { hideGlobalSubtitle(); return; }
 
     const sourceLabel = subtitleLangLabel(sourceLang, "Source");
     const targetLabel = subtitleLangLabel(subtitleLang || sourceLang, "Original");
-    meta.textContent = "From " + sourceLabel + " -> " + targetLabel + (speaker ? " · " + speaker : "");
-    textEl.textContent = text;
-    bar.classList.remove("hidden");
-    clearTimeout(bar._clearTimer);
-    bar._clearTimer = setTimeout(() => hideGlobalSubtitle(), 5500);
+    meta.textContent = sourceLabel + " → " + targetLabel + (speaker ? " · " + speaker : "");
+    textEl.textContent = displayText;
+    clearTimeout(hideGlobalSubtitle._timer);
+    hideGlobalSubtitle._timer = setTimeout(() => hideGlobalSubtitle(), 6000);
   }
 
   function renderLocalSignSubtitle() {
@@ -860,11 +855,7 @@ if ("serviceWorker" in navigator) {
           localSub.textContent = "";
           hideGlobalSubtitle();
         }
-        // Append final transcription to chat input
-        if (data.isFinal && data.text) {
-          const input = $("chat-input");
-          if (input) input.value += (input.value ? " " : "") + data.text.trim();
-        }
+        // (subtitles only — no chat input fill)
         return;
       }
 
@@ -1030,8 +1021,8 @@ if ("serviceWorker" in navigator) {
     const dinput = $("doc-file-input");
     if (dinput) dinput.value = "";
     if (socket && socket.connected) emitDocLanguage();
-    setMicMuted(false);
-    setCamMuted(false);
+    setMicMuted(true);
+    setCamMuted(true);
     setSubtitlesEnabled(false);
   }
 
@@ -1333,14 +1324,18 @@ if ("serviceWorker" in navigator) {
     const settingsBtn = $("btn-settings");
     const settingsPopup = $("settings-popup");
     if (settingsBtn && settingsPopup) {
+      // Prevent any touch/click inside popup from closing it
+      settingsPopup.addEventListener("click", (e) => e.stopPropagation());
+      settingsPopup.addEventListener("touchend", (e) => e.stopPropagation());
+
       settingsBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         settingsPopup.classList.toggle("hidden");
         settingsBtn.classList.toggle("active", !settingsPopup.classList.contains("hidden"));
       });
-      // Close popup when clicking outside
+      // Close popup when clicking/tapping outside
       document.addEventListener("click", (e) => {
-        if (!settingsPopup.contains(e.target) && e.target !== settingsBtn) {
+        if (!settingsPopup.contains(e.target) && !settingsBtn.contains(e.target)) {
           settingsPopup.classList.add("hidden");
           settingsBtn.classList.remove("active");
         }
@@ -1402,18 +1397,7 @@ if ("serviceWorker" in navigator) {
       input.value = "";
     });
 
-    // Voice-to-text button
-    const sttBtn = $("btn-stt");
-    if (sttBtn) sttBtn.addEventListener("click", toggleStt);
-
-    // STT language change
-    const sttLang = $("stt-lang-select");
-    if (sttLang) sttLang.addEventListener("change", () => {
-      if (sttActive) {
-        stopStt();
-        startStt();
-      }
-    });
+    // (STT mic button and lang select removed from chat — subtitles controlled via Settings)
 
     // Hand-sign checkboxes
     const handSignCb = $("hand-sign-enable");
@@ -1458,16 +1442,7 @@ if ("serviceWorker" in navigator) {
     const docLang = $("doc-lang-select");
     if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
 
-    // Receive language for real-time STT translation
-    const recvLang = $("recv-lang-select");
-    if (recvLang) {
-      recvLang.value = getReceiveLang();
-      recvLang.addEventListener("change", () => {
-        recvLang.value = normalizeReceiveLang(recvLang.value);
-        setReceiveLang(recvLang.value);
-        emitDocLanguage();
-      });
-    }
+    // (recv-lang-select removed — "To language" in Settings handles this now)
 
     // Doc file upload
     const docFile = $("doc-file-input");
@@ -1584,8 +1559,6 @@ if ("serviceWorker" in navigator) {
   async function boot() {
     wireEvents();
     initStt();
-    const recvLang = $("recv-lang-select");
-    if (recvLang) recvLang.value = getReceiveLang();
 
     // Check for existing session
     const token = getToken();

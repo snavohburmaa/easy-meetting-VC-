@@ -242,10 +242,13 @@
             </div>
           </div>
 
-          <!-- QR / share row -->
+          <!-- QR + subtitle row -->
           <div class="qr-row">
             <img id="qr-img" alt="Meeting QR code" width="72" height="72" />
-            <p class="qr-hint muted small">Scan to join · QR invalidates when the meeting ends</p>
+            <div class="qr-subtitle-area" aria-live="polite">
+              <div id="qr-subtitle-meta" class="qr-subtitle-meta"></div>
+              <div id="qr-subtitle-text" class="qr-subtitle-text"></div>
+            </div>
           </div>
 
         </div><!-- /.meeting-stage -->
@@ -281,59 +284,8 @@
           <div class="sidebar-panel chat-panel active" id="panel-chat">
             <div id="chat-log" class="chat-log" aria-live="polite"></div>
 
-            <!-- Voice-to-text live transcript -->
-            <div id="stt-live-bar" class="stt-live-bar hidden">
-              <div class="stt-pulse"></div>
-              <span id="stt-live-text" class="stt-live-text">Listening...</span>
-              <select id="stt-lang-select" class="stt-lang-select" title="Speech language">
-                <option value="en-US">English</option>
-                <option value="my-MM">Myanmar</option>
-                <option value="th-TH">Thai</option>
-                <option value="ja-JP">Japanese</option>
-                <option value="zh-CN">Chinese</option>
-                <option value="ko-KR">Korean</option>
-                <option value="fr-FR">French</option>
-                <option value="de-DE">German</option>
-                <option value="es-ES">Spanish</option>
-                <option value="pt-BR">Portuguese</option>
-                <option value="ru-RU">Russian</option>
-                <option value="hi-IN">Hindi</option>
-                <option value="ar-SA">Arabic</option>
-                <option value="vi-VN">Vietnamese</option>
-                <option value="id-ID">Indonesian</option>
-                <option value="tr-TR">Turkish</option>
-                <option value="it-IT">Italian</option>
-              </select>
-            </div>
-
-            <div class="stt-live-bar" style="margin-top:0.5rem;">
-              <span class="stt-live-text">Translate incoming voice to</span>
-              <select id="recv-lang-select" class="stt-lang-select" title="Receive language">
-                <option value="en">English</option>
-                <option value="my">Myanmar</option>
-                <option value="th">Thai</option>
-                <option value="ja">Japanese</option>
-                <option value="zh">Chinese</option>
-                <option value="ko">Korean</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="es">Spanish</option>
-                <option value="pt">Portuguese</option>
-                <option value="ru">Russian</option>
-                <option value="hi">Hindi</option>
-                <option value="ar">Arabic</option>
-                <option value="vi">Vietnamese</option>
-                <option value="id">Indonesian</option>
-                <option value="tr">Turkish</option>
-                <option value="it">Italian</option>
-              </select>
-            </div>
-
             <form id="form-chat" class="chat-form">
               <input id="chat-input" type="text" maxlength="2000" placeholder="Message..." autocomplete="off" />
-              <button type="button" id="btn-stt" class="icon-btn stt-btn" title="Voice to text">
-                <i data-lucide="mic" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-              </button>
               <button type="submit">
                 <i data-lucide="send" style="width:14px;height:14px;stroke:#fff;stroke-width:2;"></i>
               </button>
@@ -398,11 +350,6 @@
         </div><!-- /.meeting-sidebar -->
 
       </div><!-- /.meeting-content -->
-
-      <div id="global-subtitle-bar" class="global-subtitle-bar hidden" aria-live="polite">
-        <div id="global-subtitle-meta" class="global-subtitle-meta"></div>
-        <div id="global-subtitle-text" class="global-subtitle-text"></div>
-      </div>
 
       <!-- Control bar -->
       <div class="meeting-controls">
