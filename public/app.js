@@ -6,6 +6,7 @@ if ("serviceWorker" in navigator) {
 (function () {
   const TOKEN_KEY = "ezmeeting_token";
   const AUTH_TYPE_KEY = "ezmeeting_auth_type"; // "jwt"
+  const RECEIVE_LANG_KEY = "ezmeeting_receive_lang";
 
   let socket = null;
   let localStream = null;
@@ -17,6 +18,7 @@ if ("serviceWorker" in navigator) {
   let localSpellDraft = "";
   const ttsPending = [];
   const MAX_TTS_QUEUED = 3;
+  const sttSubtitleTimers = new Map();
 
   let docPdfBlobUrl = null;
   let pdfDoc = null;
@@ -55,6 +57,16 @@ if ("serviceWorker" in navigator) {
   function clearToken()  { localStorage.removeItem(TOKEN_KEY); }
   function getAuthType() { return localStorage.getItem(AUTH_TYPE_KEY) || "jwt"; }
   function setAuthType(t) { localStorage.setItem(AUTH_TYPE_KEY, t); }
+  function normalizeReceiveLang(code) {
+    const c = typeof code === "string" ? code.trim().toLowerCase() : "";
+    return /^[a-z]{2}$/.test(c) ? c : "en";
+  }
+  function getReceiveLang() {
+    return normalizeReceiveLang(localStorage.getItem(RECEIVE_LANG_KEY) || "en");
+  }
+  function setReceiveLang(code) {
+    localStorage.setItem(RECEIVE_LANG_KEY, normalizeReceiveLang(code));
+  }
 
 
   // ── View management ──────────────────────────────────────────
@@ -306,6 +318,41 @@ if ("serviceWorker" in navigator) {
     sub.textContent = line ? line + kind : "";
   }
 
+  // ── STT subtitle helpers (real-time translated voice) ────────
+  function clearSttSubtitleTimer(key) {
+    const t = sttSubtitleTimers.get(key);
+    if (t) { clearTimeout(t); sttSubtitleTimers.delete(key); }
+  }
+
+  function scheduleSttSubtitleClear(key, el) {
+    if (!el) return;
+    clearSttSubtitleTimer(key);
+    const t = setTimeout(() => { el.textContent = ""; sttSubtitleTimers.delete(key); }, 5000);
+    sttSubtitleTimers.set(key, t);
+  }
+
+  function sttSubtitleText(data) {
+    let line = data && data.text ? String(data.text) : "";
+    if (data && data.translatedText) line += " → " + data.translatedText;
+    return line;
+  }
+
+  function setLocalSttSubtitle(data) {
+    const el = $("local-stt-subtitle");
+    if (!el) return;
+    el.textContent = sttSubtitleText(data);
+    scheduleSttSubtitleClear("local", el);
+  }
+
+  function setRemoteSttSubtitle(peerId, data) {
+    const wrap = document.getElementById("remote-" + peerId);
+    if (!wrap) return;
+    const sub = wrap.querySelector(".remote-stt-subtitle");
+    if (!sub) return;
+    sub.textContent = sttSubtitleText(data);
+    scheduleSttSubtitleClear("remote:" + peerId, sub);
+  }
+
   // ── TTS ──────────────────────────────────────────────────────
   function flushTtsQueue() {
     if (!window.speechSynthesis) return;
@@ -434,9 +481,10 @@ if ("serviceWorker" in navigator) {
   }
 
   function emitDocLanguage() {
-    const sel = $("doc-lang-select");
+    const sel = $("recv-lang-select") || $("doc-lang-select");
     if (!socket || !socket.connected || !sel) return;
-    socket.emit("doc:setLanguage", { preferredLanguage: sel.value });
+    const lang = normalizeReceiveLang(sel.value);
+    socket.emit("doc:setLanguage", { preferredLanguage: lang });
   }
 
   function applyDocPayload(d) {
@@ -689,6 +737,16 @@ if ("serviceWorker" in navigator) {
       flushTtsQueue();
     });
 
+    /* ── Real-time translated STT subtitles ── */
+    socket.on("stt:message", (data) => {
+      const isSelf = socket && data.socketId === socket.id;
+      if (isSelf) {
+        setLocalSttSubtitle(data);
+      } else if (data.socketId) {
+        setRemoteSttSubtitle(data.socketId, data);
+      }
+    });
+
     /* ── Real-time voice captions from other users ── */
     socket.on("caption:voice", (data) => {
       const peerId = data.socketId;
@@ -825,11 +883,15 @@ if ("serviceWorker" in navigator) {
         const sub = document.createElement("div");
         sub.className = "video-subtitle remote-sign-subtitle";
         sub.setAttribute("aria-live", "polite");
+        const sttSub = document.createElement("div");
+        sttSub.className = "video-subtitle stt-subtitle remote-stt-subtitle";
+        sttSub.setAttribute("aria-live", "polite");
         const lab = document.createElement("span");
         lab.className = "label";
         lab.textContent = remoteName || "Guest";
         wrap.appendChild(vid);
         wrap.appendChild(sub);
+        wrap.appendChild(sttSub);
         wrap.appendChild(lab);
         $("remote-videos").appendChild(wrap);
       }
@@ -841,6 +903,7 @@ if ("serviceWorker" in navigator) {
   }
 
   function removePeer(peerId) {
+    clearSttSubtitleTimer("remote:" + peerId);
     const peer = peers.get(peerId);
     if (peer) { try { peer.destroy(); } catch (_) {} peers.delete(peerId); }
     const wrap = document.getElementById("remote-" + peerId);
@@ -865,8 +928,12 @@ if ("serviceWorker" in navigator) {
     renderLocalSignSubtitle();
     document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
     document.querySelectorAll(".remote-voice-subtitle").forEach(n => { n.textContent = ""; });
+    document.querySelectorAll(".remote-stt-subtitle").forEach(n => { n.textContent = ""; });
     const localVoiceSub = $("local-voice-subtitle");
     if (localVoiceSub) localVoiceSub.textContent = "";
+    const localSttSub = $("local-stt-subtitle");
+    if (localSttSub) localSttSub.textContent = "";
+    clearSttSubtitleTimer("local");
     resetDocPanel();
     syncDocHostUi();
     const dinput = $("doc-file-input");
@@ -899,6 +966,10 @@ if ("serviceWorker" in navigator) {
     if (locSub) locSub.textContent = "";
     const locVoiceSub = $("local-voice-subtitle");
     if (locVoiceSub) locVoiceSub.textContent = "";
+    const locSttSub = $("local-stt-subtitle");
+    if (locSttSub) locSttSub.textContent = "";
+    sttSubtitleTimers.forEach((t) => clearTimeout(t));
+    sttSubtitleTimers.clear();
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
     $("remote-videos").innerHTML = "";
@@ -1157,6 +1228,16 @@ if ("serviceWorker" in navigator) {
       updateControlIcons();
     });
 
+    const langBtn = $("btn-open-language");
+    if (langBtn) {
+      langBtn.addEventListener("click", () => {
+        openSidebar("chat");
+        const sel = $("recv-lang-select");
+        if (sel) sel.focus();
+        updateControlIcons();
+      });
+    }
+
     $("btn-toggle-handsign-bar").addEventListener("click", () => {
       const bar = $("hand-sign-bar");
       if (!bar) return;
@@ -1274,6 +1355,17 @@ if ("serviceWorker" in navigator) {
     const docLang = $("doc-lang-select");
     if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
 
+    // Receive language for real-time STT translation
+    const recvLang = $("recv-lang-select");
+    if (recvLang) {
+      recvLang.value = getReceiveLang();
+      recvLang.addEventListener("change", () => {
+        recvLang.value = normalizeReceiveLang(recvLang.value);
+        setReceiveLang(recvLang.value);
+        emitDocLanguage();
+      });
+    }
+
     // Doc file upload
     const docFile = $("doc-file-input");
     if (docFile) {
@@ -1389,6 +1481,8 @@ if ("serviceWorker" in navigator) {
   async function boot() {
     wireEvents();
     initStt();
+    const recvLang = $("recv-lang-select");
+    if (recvLang) recvLang.value = getReceiveLang();
 
     // Check for existing session
     const token = getToken();

@@ -19,12 +19,18 @@ import { createDocumentsRouter } from "./routes/documents.js";
 import * as meetingDoc from "./lib/meetingDocumentPipeline.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getKey, markLimited, isRateLimitError } from "./lib/geminiKeys.js";
+import { normalizeTargetLang } from "./lib/detectLanguage.js";
+import { translateTextWithRetry } from "./lib/translate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const WHISPER_URL = process.env.WHISPER_URL || "http://127.0.0.1:5555";
+const LT_URL = process.env.LIBRETRANSLATE_URL || "https://libretranslate.com";
+const LT_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
+const STT_TRANSLATION_CACHE_MAX = 500;
+const sttTranslationCache = new Map();
 
 /* Ensure uploads directory exists at startup */
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads"));
@@ -65,6 +71,49 @@ function joinUrlFromSocket(socket, code) {
   const host = socket.handshake.headers?.host || `localhost:${PORT}`;
   const proto = socket.handshake.headers["x-forwarded-proto"] || "http";
   return `${proto}://${host}/?join=${encodeURIComponent(code)}`;
+}
+
+/* ── Real-time STT translation (per-recipient) ── */
+async function translateSttIfNeeded(text, sourceLang, targetLang) {
+  const sourceRaw = typeof sourceLang === "string" ? sourceLang.trim().toLowerCase() : "";
+  const source = /^[a-z]{2}(-[a-z]{2})?$/i.test(sourceRaw) ? sourceRaw.split("-")[0] : "auto";
+  const target = normalizeTargetLang(targetLang || "en");
+  if (!text || !text.trim() || (source !== "auto" && source === target)) return "";
+
+  const key = `${source}|${target}|${text}`;
+  if (sttTranslationCache.has(key)) return sttTranslationCache.get(key);
+
+  try {
+    const translated = await translateTextWithRetry(text, source || "auto", target, LT_URL, LT_KEY);
+    sttTranslationCache.set(key, translated || "");
+    if (sttTranslationCache.size > STT_TRANSLATION_CACHE_MAX) {
+      const oldest = sttTranslationCache.keys().next().value;
+      sttTranslationCache.delete(oldest);
+    }
+    return translated || "";
+  } catch {
+    // Fallback to Gemini if LibreTranslate fails
+    const apiKey = getKey();
+    if (!apiKey) return "";
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const sourceHint = source === "auto" ? "auto-detect source language" : `source language is ${source}`;
+      const prompt = `Translate this speech transcript to ${target}. ${sourceHint}. Return only the translated text, no explanations.\n\nText:\n${text}`;
+      const result = await model.generateContent(prompt);
+      const translated = result?.response?.text ? String(result.response.text()).trim() : "";
+      if (!translated) return "";
+      sttTranslationCache.set(key, translated);
+      if (sttTranslationCache.size > STT_TRANSLATION_CACHE_MAX) {
+        const oldest = sttTranslationCache.keys().next().value;
+        sttTranslationCache.delete(oldest);
+      }
+      return translated;
+    } catch {
+      return "";
+    }
+  }
 }
 
 /** GET /api/health */
@@ -279,6 +328,39 @@ io.on("connection", (socket) => {
       from: socket.user.name,
       socketId: socket.id,
     });
+  });
+
+  /* ── Real-time STT with per-recipient translation ── */
+  socket.on("stt:message", async (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const text = typeof payload?.text === "string" ? payload.text.slice(0, 2000) : "";
+    if (!text.trim()) return;
+    const lang = typeof payload?.lang === "string" ? payload.lang.slice(0, 32) : "";
+    const cleanText = text.trim();
+    const sourceLangRaw = typeof lang === "string" ? lang.trim().toLowerCase() : "";
+    const sourceLang = /^[a-z]{2}(-[a-z]{2})?$/i.test(sourceLangRaw)
+      ? sourceLangRaw.split("-")[0]
+      : "auto";
+    const at = Date.now();
+    const roomSockets = await io.in(code).fetchSockets();
+
+    await Promise.all(roomSockets.map(async (recipient) => {
+      const preferred = normalizeTargetLang(recipient.data.preferredLanguage || "en");
+      const translatedText =
+        preferred === sourceLang
+          ? ""
+          : await translateSttIfNeeded(cleanText, sourceLang, preferred);
+
+      recipient.emit("stt:message", {
+        text: cleanText,
+        lang: lang || undefined,
+        translatedText: translatedText || undefined,
+        at,
+        from: socket.user.name,
+        socketId: socket.id,
+      });
+    }));
   });
 
   const SIGN_KINDS = new Set(["gesture", "spell", "model"]);

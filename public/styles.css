@@ -622,6 +622,16 @@ main { position: relative; }
   z-index: 5;
 }
 .video-subtitle:empty { display: none; }
+.video-subtitle.stt-subtitle {
+  bottom: 50px;
+  color: #e2e8f0;
+  background: linear-gradient(transparent, rgba(15, 23, 42, 0.82));
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+  padding: 0.35rem 0.65rem;
+  z-index: 7;
+}
 .video-subtitle .sign-draft { display: block; opacity: 0.85; font-size: 0.67rem; margin-top: 0.15rem; }
 /* Voice-to-text subtitle — positioned above the sign subtitle */
 .voice-subtitle,
