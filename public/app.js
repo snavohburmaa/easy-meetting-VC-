@@ -39,6 +39,7 @@ if ("serviceWorker" in navigator) {
 
   // Subtitle settings
   let subtitlesEnabled = false;
+  let subtitleSourceLang = "auto"; // "auto" = detect source speech language
   let subtitleLang = ""; // "" = original (no translation)
 
   // NotebookLM conversation history (client-side only)
@@ -50,6 +51,35 @@ if ("serviceWorker" in navigator) {
   }
 
   const $ = (id) => document.getElementById(id);
+
+  const SUBTITLE_LANG_LABELS = {
+    auto: "Auto",
+    en: "English",
+    my: "Myanmar",
+    th: "Thai",
+    ja: "Japanese",
+    zh: "Chinese",
+    ko: "Korean",
+    fr: "French",
+    de: "German",
+    es: "Spanish",
+    pt: "Portuguese",
+    ru: "Russian",
+    hi: "Hindi",
+    ar: "Arabic",
+    vi: "Vietnamese",
+    id: "Indonesian",
+    tr: "Turkish",
+    it: "Italian",
+    nl: "Dutch",
+    pl: "Polish",
+    uk: "Ukrainian",
+    sv: "Swedish",
+    ta: "Tamil",
+    bn: "Bengali",
+    ms: "Malay",
+    tl: "Filipino",
+  };
 
   // ── Token helpers ────────────────────────────────────────────
   function getToken()    { return localStorage.getItem(TOKEN_KEY); }
@@ -291,6 +321,40 @@ if ("serviceWorker" in navigator) {
     document.querySelectorAll(".remote-voice-subtitle").forEach((el) => { el.textContent = ""; });
     const localVSub = $("local-voice-subtitle");
     if (localVSub) localVSub.textContent = "";
+    hideGlobalSubtitle();
+  }
+
+  function subtitleLangLabel(code, fallback) {
+    const key = String(code || "").trim().toLowerCase();
+    if (SUBTITLE_LANG_LABELS[key]) return SUBTITLE_LANG_LABELS[key];
+    return fallback || key.toUpperCase() || "Unknown";
+  }
+
+  function hideGlobalSubtitle() {
+    const bar = $("global-subtitle-bar");
+    const meta = $("global-subtitle-meta");
+    const text = $("global-subtitle-text");
+    if (!bar || !meta || !text) return;
+    meta.textContent = "";
+    text.textContent = "";
+    clearTimeout(bar._clearTimer);
+    bar.classList.add("hidden");
+  }
+
+  function showGlobalSubtitle(text, sourceLang, speaker) {
+    const bar = $("global-subtitle-bar");
+    const meta = $("global-subtitle-meta");
+    const textEl = $("global-subtitle-text");
+    if (!bar || !meta || !textEl) return;
+    if (!subtitlesEnabled || !text) { hideGlobalSubtitle(); return; }
+
+    const sourceLabel = subtitleLangLabel(sourceLang, "Source");
+    const targetLabel = subtitleLangLabel(subtitleLang || sourceLang, "Original");
+    meta.textContent = "From " + sourceLabel + " -> " + targetLabel + (speaker ? " · " + speaker : "");
+    textEl.textContent = text;
+    bar.classList.remove("hidden");
+    clearTimeout(bar._clearTimer);
+    bar._clearTimer = setTimeout(() => hideGlobalSubtitle(), 5500);
   }
 
   function renderLocalSignSubtitle() {
@@ -555,8 +619,10 @@ if ("serviceWorker" in navigator) {
   const _translateCache = new Map();
   async function translateForSubtitle(text, sourceLang) {
     if (!subtitleLang || !text.trim()) return text;
-    // Map Whisper lang codes (e.g. "en") to our target
-    const src = (sourceLang || "auto").split("-")[0] || "auto";
+    // Use explicit source language when user selected "From language".
+    const forcedSrc = subtitleSourceLang && subtitleSourceLang !== "auto" ? subtitleSourceLang : "";
+    const detectedSrc = (sourceLang || "auto").split("-")[0] || "auto";
+    const src = forcedSrc || detectedSrc;
     if (src === subtitleLang) return text;
     const key = src + ":" + subtitleLang + ":" + text;
     if (_translateCache.has(key)) return _translateCache.get(key);
@@ -755,6 +821,8 @@ if ("serviceWorker" in navigator) {
       // If this is our own transcription, show on local video + chat input
       if (peerId === socket.id) {
         const localSub = $("local-voice-subtitle");
+        const sourceForMeta = subtitleSourceLang !== "auto" ? subtitleSourceLang : (data.lang || "auto");
+        const speaker = data.from || "You";
         if (localSub && subtitlesEnabled) {
           localSub.textContent = data.text || "";
           clearTimeout(localSub._clearTimer);
@@ -763,16 +831,22 @@ if ("serviceWorker" in navigator) {
             if (subtitleLang) {
               const srcLang = data.lang || "auto";
               translateForSubtitle(data.text, srcLang).then((translated) => {
+                const finalText = translated || data.text;
                 if (translated !== data.text) localSub.textContent = translated;
+                showGlobalSubtitle(finalText, sourceForMeta, speaker);
                 clearTimeout(localSub._clearTimer);
                 localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 5000);
               });
             } else {
+              showGlobalSubtitle(data.text, sourceForMeta, speaker);
               localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 4000);
             }
+          } else if (data.text) {
+            showGlobalSubtitle(data.text, sourceForMeta, speaker);
           }
         } else if (localSub && !subtitlesEnabled) {
           localSub.textContent = "";
+          hideGlobalSubtitle();
         }
         // Append final transcription to chat input
         if (data.isFinal && data.text) {
@@ -798,6 +872,10 @@ if ("serviceWorker" in navigator) {
       // Show original text immediately
       sub.textContent = data.text || "";
       clearTimeout(sub._clearTimer);
+      if (data.text) {
+        const sourceForMeta = subtitleSourceLang !== "auto" ? subtitleSourceLang : (data.lang || "auto");
+        showGlobalSubtitle(data.text, sourceForMeta, data.from || "Participant");
+      }
 
       // If user selected a different language, translate async
       if (subtitleLang && data.text && data.isFinal) {
@@ -806,6 +884,7 @@ if ("serviceWorker" in navigator) {
           if (translated !== data.text) {
             sub.textContent = translated;
           }
+          showGlobalSubtitle(translated || data.text, srcLang, data.from || "Participant");
           clearTimeout(sub._clearTimer);
           sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 5000);
         });
@@ -966,6 +1045,7 @@ if ("serviceWorker" in navigator) {
     if (locSub) locSub.textContent = "";
     const locVoiceSub = $("local-voice-subtitle");
     if (locVoiceSub) locVoiceSub.textContent = "";
+    hideGlobalSubtitle();
     const locSttSub = $("local-stt-subtitle");
     if (locSttSub) locSttSub.textContent = "";
     sttSubtitleTimers.forEach((t) => clearTimeout(t));
@@ -1228,16 +1308,6 @@ if ("serviceWorker" in navigator) {
       updateControlIcons();
     });
 
-    const langBtn = $("btn-open-language");
-    if (langBtn) {
-      langBtn.addEventListener("click", () => {
-        openSidebar("chat");
-        const sel = $("recv-lang-select");
-        if (sel) sel.focus();
-        updateControlIcons();
-      });
-    }
-
     $("btn-toggle-handsign-bar").addEventListener("click", () => {
       const bar = $("hand-sign-bar");
       if (!bar) return;
@@ -1281,9 +1351,19 @@ if ("serviceWorker" in navigator) {
       }
     }
 
-    // Subtitle language
+    // Subtitle translation: from language
+    const subtitleSourceSel = $("subtitle-source-lang-select");
+    if (subtitleSourceSel) {
+      subtitleSourceSel.value = subtitleSourceLang;
+      subtitleSourceSel.addEventListener("change", () => {
+        subtitleSourceLang = subtitleSourceSel.value || "auto";
+      });
+    }
+
+    // Subtitle translation: to language
     const subtitleLangSel = $("subtitle-lang-select");
     if (subtitleLangSel) {
+      subtitleLangSel.value = subtitleLang;
       subtitleLangSel.addEventListener("change", () => {
         subtitleLang = subtitleLangSel.value;
       });
