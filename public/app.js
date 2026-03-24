@@ -1,3 +1,8 @@
+// Register PWA service worker
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
 (function () {
   const TOKEN_KEY = "ezmeeting_token";
   const AUTH_TYPE_KEY = "ezmeeting_auth_type"; // "jwt"
