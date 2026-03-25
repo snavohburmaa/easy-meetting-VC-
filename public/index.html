@@ -1,513 +1,556 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ez Meeting — Video, Voice &amp; Chat</title>
-    <meta name="description" content="Ez Meeting: instant video meetings with shared docs, hand-sign captions, and AI-powered document insights." />
-    <!-- PWA -->
-    <link rel="manifest" href="/manifest.json" />
-    <meta name="theme-color" content="#6366f1" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Ez Meet" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
-    <link rel="icon" type="image/svg+xml" href="/icons/icon-192.svg" />
-    <link rel="stylesheet" href="/styles.css" />
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  </head>
-  <body>
 
-    <!-- ============================================================
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ez Meeting â€” Video, Voice &amp; Chat</title>
+  <meta name="description"
+    content="Ez Meeting: instant video meetings with shared docs, hand-sign captions, and AI-powered document insights." />
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#6366f1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Ez Meet" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
+  <link rel="icon" type="image/svg+xml" href="/icons/icon-192.svg" />
+  <link rel="stylesheet" href="/styles.css" />
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+
+<body>
+
+  <!-- ============================================================
          VIEW: LOGIN
     ============================================================ -->
-    <section id="view-login" class="hidden">
-      <div class="login-bg" aria-hidden="true">
-        <div class="login-bg-orb"></div>
-        <div class="login-bg-orb"></div>
-        <div class="login-bg-orb"></div>
+  <section id="view-login" class="hidden">
+    <div class="login-bg" aria-hidden="true">
+      <div class="login-bg-orb"></div>
+      <div class="login-bg-orb"></div>
+      <div class="login-bg-orb"></div>
+    </div>
+    <div class="login-card">
+      <div class="login-icon">
+        <i data-lucide="video" style="width:28px;height:28px;stroke:#fff;stroke-width:2;"></i>
       </div>
-      <div class="login-card">
-        <div class="login-icon">
-          <i data-lucide="video" style="width:28px;height:28px;stroke:#fff;stroke-width:2;"></i>
-        </div>
-        <h2>Welcome to Ez&nbsp;Meeting</h2>
-        <p class="hint">Enter your details to get started.</p>
+      <h2>Welcome to Ez&nbsp;Meeting</h2>
+      <p class="hint">Enter your details to get started.</p>
 
-        <form id="form-login">
-          <label>
-            Email address
-            <input id="login-email" type="email" required autocomplete="email" maxlength="320" placeholder="you@example.com" />
-          </label>
-          <label>
-            Display name
-            <input id="login-name" type="text" required autocomplete="name" maxlength="80" placeholder="Your name" />
-          </label>
-          <button type="submit" id="btn-login">
-            Continue
-            <i data-lucide="arrow-right" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
-          </button>
-          <p id="login-error" class="error" role="alert"></p>
-        </form>
-      </div>
-    </section>
+      <form id="form-login">
+        <label>
+          Email address
+          <input id="login-email" type="email" required autocomplete="email" maxlength="320"
+            placeholder="you@example.com" />
+        </label>
+        <label>
+          Display name
+          <input id="login-name" type="text" required autocomplete="name" maxlength="80" placeholder="Your name" />
+        </label>
+        <button type="submit" id="btn-login">
+          Continue
+          <i data-lucide="arrow-right" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
+        </button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </section>
 
-    <!-- ============================================================
+  <!-- ============================================================
          VIEW: LOBBY
     ============================================================ -->
-    <section id="view-lobby" class="hidden">
-      <header class="topbar">
-        <div class="topbar-brand">
-          <div class="topbar-logo">
-            <i data-lucide="video" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
-          </div>
-          <h1>Ez Meeting</h1>
+  <section id="view-lobby" class="hidden">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="topbar-logo">
+          <i data-lucide="video" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
         </div>
-        <div style="display:flex;align-items:center;gap:0.75rem;">
-          <button type="button" id="btn-logout" class="ghost small">
-            <i data-lucide="log-out" style="width:14px;height:14px;"></i>
-            Sign out
-          </button>
+        <h1>Ez Meeting</h1>
+      </div>
+      <div style="display:flex;align-items:center;gap:0.75rem;">
+        <button type="button" id="btn-logout" class="ghost small">
+          <i data-lucide="log-out" style="width:14px;height:14px;"></i>
+          Sign out
+        </button>
+      </div>
+    </header>
+
+    <div class="lobby-body">
+      <!-- Hero -->
+      <div class="lobby-hero">
+        <div class="lobby-hero-badge">
+          <i data-lucide="sparkles" style="width:12px;height:12px;"></i>
+          Free &amp; Open-Source MVP
         </div>
-      </header>
-
-      <div class="lobby-body">
-        <!-- Hero -->
-        <div class="lobby-hero">
-          <div class="lobby-hero-badge">
-            <i data-lucide="sparkles" style="width:12px;height:12px;"></i>
-            Free &amp; Open-Source MVP
-          </div>
-          <h2>Meet without friction.</h2>
-          <p>Instant video rooms with real-time chat, hand-sign captions, and AI-powered document insights — just share a code.</p>
-          <div class="lobby-user-chip">
-            <div class="lobby-user-avatar" id="lobby-user-avatar">?</div>
-            <span id="lobby-user"></span>
-          </div>
-        </div>
-
-        <!-- Host / Join cards -->
-        <div class="lobby-cards">
-          <!-- Host card -->
-          <div class="lobby-card lobby-card--host">
-            <div class="lobby-card-glow"></div>
-            <span class="lobby-card-icon">
-              <i data-lucide="rocket" style="width:36px;height:36px;stroke:var(--accent-2);stroke-width:1.5;"></i>
-            </span>
-            <h3>Host a Meeting</h3>
-            <p>Create an instant room. Share the code or QR with anyone — they can join in seconds.</p>
-            <button type="button" id="btn-host">
-              <i data-lucide="plus-circle" style="width:16px;height:16px;stroke:#fff;stroke-width:2;"></i>
-              Start Meeting
-            </button>
-          </div>
-
-          <!-- Join card -->
-          <div class="lobby-card lobby-card--join">
-            <div class="lobby-card-glow"></div>
-            <span class="lobby-card-icon">
-              <i data-lucide="link-2" style="width:36px;height:36px;stroke:var(--cyan);stroke-width:1.5;"></i>
-            </span>
-            <h3>Join a Meeting</h3>
-            <p>Enter the room code you received, or paste a join link to hop straight in.</p>
-            <form id="form-join">
-              <div class="join-input-row">
-                <label>
-                  Room code
-                  <input id="join-code" type="text" maxlength="12" placeholder="e.g. ABC123" autocomplete="off" />
-                </label>
-                <button type="submit" style="margin-bottom:1.1rem;">
-                  Join
-                  <i data-lucide="arrow-right" style="width:15px;height:15px;stroke:#fff;stroke-width:2.5;"></i>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-        <!-- Feature highlights -->
-        <div class="lobby-features">
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="video" style="width:26px;height:26px;stroke:var(--accent-2);stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">HD Video &amp; Audio</div>
-            <div class="lobby-feature-desc">WebRTC mesh, no SFU required</div>
-          </div>
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="mic" style="width:26px;height:26px;stroke:var(--cyan);stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">Voice to Text</div>
-            <div class="lobby-feature-desc">Multi-language speech recognition</div>
-          </div>
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="hand" style="width:26px;height:26px;stroke:var(--green);stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">Hand-Sign Captions</div>
-            <div class="lobby-feature-desc">MediaPipe gesture recognition</div>
-          </div>
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="file-text" style="width:26px;height:26px;stroke:var(--amber);stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">Smart Documents</div>
-            <div class="lobby-feature-desc">AI-powered Q&amp;A like NotebookLM</div>
-          </div>
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="globe" style="width:26px;height:26px;stroke:#a78bfa;stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">Auto-Translation</div>
-            <div class="lobby-feature-desc">Multi-language doc insights</div>
-          </div>
-          <div class="lobby-feature">
-            <span class="lobby-feature-icon">
-              <i data-lucide="shield-check" style="width:26px;height:26px;stroke:#34d399;stroke-width:1.75;"></i>
-            </span>
-            <div class="lobby-feature-title">Secure Access</div>
-            <div class="lobby-feature-desc">Email-based authentication</div>
-          </div>
-        </div>
-
-        <div class="lobby-footer">
-          <p id="lobby-error" class="error" role="alert" style="margin-bottom:0.5rem;"></p>
-          <p class="muted small">Meeting codes are invalidated when the room ends — same as Zoom.</p>
+        <h2>Meet without friction.</h2>
+        <p>Instant video rooms with real-time chat, hand-sign captions, and AI-powered document insights â€” just share
+          a
+          code.</p>
+        <div class="lobby-user-chip">
+          <div class="lobby-user-avatar" id="lobby-user-avatar">?</div>
+          <span id="lobby-user"></span>
         </div>
       </div>
-    </section>
 
-    <!-- ============================================================
+      <!-- Host / Join cards -->
+      <div class="lobby-cards">
+        <!-- Host card -->
+        <div class="lobby-card lobby-card--host">
+          <div class="lobby-card-glow"></div>
+          <span class="lobby-card-icon">
+            <i data-lucide="rocket" style="width:36px;height:36px;stroke:var(--accent-2);stroke-width:1.5;"></i>
+          </span>
+          <h3>Host a Meeting</h3>
+          <p>Create an instant room. Share the code or QR with anyone â€” they can join in seconds.</p>
+          <button type="button" id="btn-host">
+            <i data-lucide="plus-circle" style="width:16px;height:16px;stroke:#fff;stroke-width:2;"></i>
+            Start Meeting
+          </button>
+        </div>
+
+        <!-- Join card -->
+        <div class="lobby-card lobby-card--join">
+          <div class="lobby-card-glow"></div>
+          <span class="lobby-card-icon">
+            <i data-lucide="link-2" style="width:36px;height:36px;stroke:var(--cyan);stroke-width:1.5;"></i>
+          </span>
+          <h3>Join a Meeting</h3>
+          <p>Enter the room code you received, or paste a join link to hop straight in.</p>
+          <form id="form-join">
+            <div class="join-input-row">
+              <label>
+                Room code
+                <input id="join-code" type="text" maxlength="12" placeholder="e.g. ABC123" autocomplete="off" />
+              </label>
+              <button type="submit">
+                Join
+                <i data-lucide="arrow-right" style="width:15px;height:15px;stroke:#fff;stroke-width:2.5;"></i>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Feature highlights -->
+      <div class="lobby-features">
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="video" style="width:26px;height:26px;stroke:var(--accent-2);stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">HD Video &amp; Audio</div>
+          <div class="lobby-feature-desc">WebRTC mesh, no SFU required</div>
+        </div>
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="mic" style="width:26px;height:26px;stroke:var(--cyan);stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">Voice to Text</div>
+          <div class="lobby-feature-desc">Multi-language speech recognition</div>
+        </div>
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="hand" style="width:26px;height:26px;stroke:var(--green);stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">Hand-Sign Captions</div>
+          <div class="lobby-feature-desc">MediaPipe gesture recognition</div>
+        </div>
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="file-text" style="width:26px;height:26px;stroke:var(--amber);stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">Smart Documents</div>
+          <div class="lobby-feature-desc">AI-powered Q&amp;A like NotebookLM</div>
+        </div>
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="globe" style="width:26px;height:26px;stroke:#a78bfa;stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">Auto-Translation</div>
+          <div class="lobby-feature-desc">Multi-language doc insights</div>
+        </div>
+        <div class="lobby-feature">
+          <span class="lobby-feature-icon">
+            <i data-lucide="shield-check" style="width:26px;height:26px;stroke:#34d399;stroke-width:1.75;"></i>
+          </span>
+          <div class="lobby-feature-title">Secure Access</div>
+          <div class="lobby-feature-desc">Email-based authentication</div>
+        </div>
+      </div>
+
+      <div class="lobby-footer">
+        <p id="lobby-error" class="error" role="alert" style="margin-bottom:0.5rem;"></p>
+        <p class="muted small">Meeting codes are invalidated when the room ends â€” same as Zoom.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
          VIEW: MEETING ROOM
     ============================================================ -->
-    <section id="view-meeting" class="hidden">
+  <section id="view-meeting" class="hidden">
 
-      <!-- Header bar -->
-      <div class="meeting-header">
-        <div class="meeting-header-left">
-          <span class="meeting-brand">Ez Meeting</span>
-          <span class="badge" id="meeting-code-label"></span>
-          <button type="button" id="btn-copy-link" class="small secondary">
-            <i data-lucide="clipboard-copy" style="width:13px;height:13px;stroke:currentColor;stroke-width:2;"></i>
-            Copy invite link
+    <!-- Header bar -->
+    <div class="meeting-header">
+      <div class="meeting-header-left">
+        <span class="meeting-brand">Ez Meeting</span>
+        <span class="badge" id="meeting-code-label"></span>
+      </div>
+      <div class="meeting-header-right">
+        <span id="meeting-status" class="meeting-status" role="status"></span>
+        <button type="button" onclick="document.getElementById('share-modal').classList.toggle('hidden')"
+          class="small secondary">
+          <i data-lucide="share-2" style="width:13px;height:13px;stroke:currentColor;stroke-width:2;"></i>
+          Share
+        </button>
+        <button type="button" id="btn-leave" class="secondary small">
+          <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+          Leave
+        </button>
+        <button type="button" id="btn-end" class="danger small hidden">
+          <i data-lucide="x-circle" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+          End for all
+        </button>
+      </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div id="share-modal" class="share-popup hidden">
+      <div class="share-popup-header">
+        <span>Share Meeting</span>
+        <button type="button" onclick="document.getElementById('share-modal').classList.add('hidden')"
+          class="ghost small">
+          <i data-lucide="x" style="width:18px;height:18px;"></i>
+        </button>
+      </div>
+      <div class="share-popup-body">
+        <div class="qr-container">
+          <img id="qr-img" alt="Meeting QR code" width="220" height="220" />
+        </div>
+        <button type="button" id="btn-copy-link" class="secondary">
+          <i data-lucide="clipboard-copy" style="width:18px;height:18px;"></i>
+          Copy invite link
+        </button>
+      </div>
+    </div>
+
+    <!-- Main content: stage + sidebar -->
+    <div class="meeting-content">
+
+      <!-- Stage (video + hand-sign bar) -->
+      <div class="meeting-stage">
+
+        <!-- Video grid -->
+        <div class="meeting-grid">
+          <div class="video-wrap" id="local-tile">
+            <video id="local-video" playsinline autoplay muted></video>
+            <div id="local-voice-subtitle" class="video-subtitle voice-subtitle" aria-live="polite"></div>
+            <div id="local-stt-subtitle" class="video-subtitle stt-subtitle" aria-live="polite"></div>
+            <div class="media-state-indicators" aria-live="polite"></div>
+            <div class="video-off-placeholder" aria-hidden="true"><i data-lucide="camera-off"
+                style="width:72px;height:72px;stroke:rgba(255,255,255,0.92);stroke-width:2.2;"></i></div>
+            <span class="label">You</span>
+          </div>
+          <div id="remote-videos" class="remote-videos"></div>
+        </div>
+
+        <!-- Floating Subtitles -->
+        <div class="floating-subtitles" aria-live="polite">
+          <div id="qr-subtitle-meta" class="qr-subtitle-meta"></div>
+          <div id="qr-subtitle-text" class="qr-subtitle-text"></div>
+        </div>
+
+      </div><!-- /.meeting-stage -->
+
+      <!-- Sidebar (chat + document + signs) -->
+      <div class="meeting-sidebar sidebar-hidden" id="meeting-sidebar">
+        <div class="sidebar-mobile-header">
+          <button type="button" id="btn-sidebar-close" class="secondary small">
+            <i data-lucide="x" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+            Close
           </button>
         </div>
-        <span id="meeting-status" class="meeting-status" role="status"></span>
-      </div>
+        <div class="sidebar-tabs">
+          <button class="sidebar-tab active" id="sidebar-tab-chat" data-tab="chat">
+            <i data-lucide="message-square" style="width:14px;height:14px;"></i>
+            Chat
+          </button>
+          <button class="sidebar-tab" id="sidebar-tab-doc" data-tab="doc">
+            <i data-lucide="file-text" style="width:14px;height:14px;"></i>
+            Document
+          </button>
+          <button class="sidebar-tab" id="sidebar-tab-handsign" data-tab="handsign">
+            <i data-lucide="hand" style="width:14px;height:14px;"></i>
+            Signs
+          </button>
+        </div>
 
-      <!-- Main content: stage + sidebar -->
-      <div class="meeting-content">
+        <!-- CHAT PANEL -->
+        <div class="sidebar-panel chat-panel active" id="panel-chat">
+          <div id="chat-log" class="chat-log" aria-live="polite"></div>
 
-        <!-- Stage (video + hand-sign bar) -->
-        <div class="meeting-stage">
+          <form id="form-chat" class="chat-form">
+            <input id="chat-input" type="text" maxlength="2000" placeholder="Message..." autocomplete="off" />
+            <button type="submit">
+              <i data-lucide="send" style="width:14px;height:14px;stroke:#fff;stroke-width:2;"></i>
+            </button>
+          </form>
+        </div>
 
-          <!-- Video grid -->
-          <div class="meeting-grid">
-            <div class="video-wrap">
-              <video id="local-video" playsinline autoplay muted></video>
-              <div id="local-voice-subtitle" class="video-subtitle voice-subtitle" aria-live="polite"></div>
-              <div id="local-sign-subtitle" class="video-subtitle" aria-live="polite"></div>
-              <div id="local-stt-subtitle" class="video-subtitle stt-subtitle" aria-live="polite"></div>
-              <span class="label">You</span>
+        <!-- DOCUMENT PANEL (NotebookLM-style) -->
+        <div class="sidebar-panel" id="panel-doc">
+          <div class="doc-panel-wrap doc-panel-wrap--notebook">
+            <!-- Source upload section -->
+            <div class="notebook-source-section">
+              <div class="notebook-source-header">
+                <i data-lucide="book-open" style="width:16px;height:16px;stroke:var(--accent-2);stroke-width:2;"></i>
+                <span>Sources</span>
+              </div>
+              <div id="doc-upload-row" class="doc-upload-row doc-upload-row--compact hidden">
+                <label class="doc-file-label notebook-upload-btn">
+                  <i data-lucide="upload" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+                  Upload source
+                  <input type="file" id="doc-file-input" accept="*/*" />
+                </label>
+              </div>
+              <p id="doc-status" class="doc-status muted small" role="status"></p>
             </div>
-            <div id="remote-videos" class="remote-videos"></div>
-          </div>
 
-          <!-- Hand-sign bar (collapsible) -->
-          <div class="hand-sign-bar" id="hand-sign-bar" style="display:none;">
-            <label class="hand-sign-toggle">
-              <input type="checkbox" id="hand-sign-enable" />
-              Enable hand-sign captions (pretrained models, no training required)
-            </label>
-            <label class="hand-sign-toggle">
-              <input type="checkbox" id="hand-sign-spell" />
-              Finger-spelling mode (A–Z · open palm = space · hold fist ~1/3s to send)
-            </label>
-            <label class="hand-sign-toggle">
-              <input type="checkbox" id="sign-tts-enable" />
-              Read captions aloud (browser TTS)
-            </label>
-            <div class="spell-actions">
-              <button type="button" id="btn-spell-commit" class="small secondary">Send line</button>
-              <button type="button" id="btn-spell-clear"  class="small secondary">Clear</button>
-            </div>
-            <p class="hand-sign-hint">
-              Gesture mode: MediaPipe gestures + fingerpose. Spell mode: ASL letters (geometry-based). Hold steady ~1/2s per gesture.
-            </p>
-            <div class="sign-panel">
-              <h3>Hand-sign feed</h3>
-              <div id="sign-log" class="sign-log" aria-live="polite"></div>
-            </div>
-          </div>
+            <!-- Notebook-style Q&A conversation -->
+            <div class="notebook-chat" id="doc-chat-wrap">
+              <div class="notebook-chat-header">
+                <i data-lucide="message-circle-question"
+                  style="width:16px;height:16px;stroke:var(--amber);stroke-width:2;"></i>
+                <span>Ask Eazii</span>
+                <span class="notebook-badge">AI</span>
+              </div>
 
-          <!-- QR + subtitle row -->
-          <div class="qr-row">
-            <img id="qr-img" alt="Meeting QR code" width="72" height="72" />
-            <div class="qr-subtitle-area" aria-live="polite">
-              <div id="qr-subtitle-meta" class="qr-subtitle-meta"></div>
-              <div id="qr-subtitle-text" class="qr-subtitle-text"></div>
-            </div>
-          </div>
+              <!-- Conversation history -->
+              <div id="notebook-conversation" class="notebook-conversation" aria-live="polite"></div>
 
-        </div><!-- /.meeting-stage -->
-
-        <!-- Sidebar (chat + document + signs) -->
-        <div class="meeting-sidebar sidebar-hidden" id="meeting-sidebar">
-          <div class="sidebar-mobile-header">
-            <button type="button" id="btn-sidebar-leave" class="danger small">
-              <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-              Leave
-            </button>
-            <button type="button" id="btn-sidebar-close" class="secondary small">
-              <i data-lucide="x" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-              Close
-            </button>
-          </div>
-          <div class="sidebar-tabs">
-            <button class="sidebar-tab active" id="sidebar-tab-chat" data-tab="chat">
-              <i data-lucide="message-square" style="width:14px;height:14px;"></i>
-              Chat
-            </button>
-            <button class="sidebar-tab" id="sidebar-tab-doc" data-tab="doc">
-              <i data-lucide="file-text" style="width:14px;height:14px;"></i>
-              Document
-            </button>
-            <button class="sidebar-tab" id="sidebar-tab-handsign" data-tab="handsign">
-              <i data-lucide="hand" style="width:14px;height:14px;"></i>
-              Signs
-            </button>
-          </div>
-
-          <!-- CHAT PANEL -->
-          <div class="sidebar-panel chat-panel active" id="panel-chat">
-            <div id="chat-log" class="chat-log" aria-live="polite"></div>
-
-            <form id="form-chat" class="chat-form">
-              <input id="chat-input" type="text" maxlength="2000" placeholder="Message..." autocomplete="off" />
-              <button type="submit">
-                <i data-lucide="send" style="width:14px;height:14px;stroke:#fff;stroke-width:2;"></i>
-              </button>
-            </form>
-          </div>
-
-          <!-- DOCUMENT PANEL (NotebookLM-style) -->
-          <div class="sidebar-panel" id="panel-doc">
-            <div class="doc-panel-wrap doc-panel-wrap--notebook">
-              <!-- Source upload section -->
-              <div class="notebook-source-section">
-                <div class="notebook-source-header">
-                  <i data-lucide="book-open" style="width:16px;height:16px;stroke:var(--accent-2);stroke-width:2;"></i>
-                  <span>Sources</span>
+              <!-- Input area -->
+              <form id="doc-chat-form" class="notebook-input-form">
+                <div class="notebook-input-wrap">
+                  <textarea id="doc-chat-input" rows="1" maxlength="4000"
+                    placeholder="Ask anything about this document..." autocomplete="off"></textarea>
+                  <button type="submit" id="doc-chat-send" class="notebook-send-btn" title="Send">
+                    <i data-lucide="arrow-up" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
+                  </button>
                 </div>
-                <div id="doc-upload-row" class="doc-upload-row doc-upload-row--compact hidden">
-                  <label class="doc-file-label notebook-upload-btn">
-                    <i data-lucide="upload" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-                    Upload source
-                    <input type="file" id="doc-file-input" accept="*/*" />
+              </form>
+            </div>
+          </div>
+        </div><!-- /#panel-doc -->
+
+        <!-- HAND SIGN LOG PANEL -->
+        <div class="sidebar-panel" id="panel-handsign">
+          <div class="handsign-panel-wrap">
+            <div class="hand-sign-bar" id="hand-sign-bar">
+              <div class="handsign-top-row">
+                <div class="handsign-top-copy">
+                  <span class="handsign-title">Hand-sign captions</span>
+                  <span class="handsign-subtitle">Pretrained models, no training required</span>
+                </div>
+                <div class="handsign-top-controls">
+                  <span id="hand-sign-status" class="handsign-status">Off</span>
+                  <label class="handsign-switch" aria-label="Enable hand-sign captions">
+                    <input type="checkbox" id="hand-sign-enable" />
+                    <span class="handsign-switch-slider"></span>
                   </label>
                 </div>
-                <p id="doc-status" class="doc-status muted small" role="status"></p>
               </div>
 
-              <!-- Notebook-style Q&A conversation -->
-              <div class="notebook-chat" id="doc-chat-wrap">
-                <div class="notebook-chat-header">
-                  <i data-lucide="message-circle-question" style="width:16px;height:16px;stroke:var(--amber);stroke-width:2;"></i>
-                  <span>Ask Eazii</span>
-                  <span class="notebook-badge">AI</span>
+              <div id="hand-sign-mode-row" class="handsign-mode-row hidden">
+                <span class="handsign-row-label">Mode</span>
+                <div class="handsign-segmented">
+                  <button type="button" id="btn-hand-mode-gesture" class="handsign-chip active">Gesture</button>
+                  <button type="button" id="btn-hand-mode-spell" class="handsign-chip">Finger-spelling</button>
                 </div>
-
-                <!-- Conversation history -->
-                <div id="notebook-conversation" class="notebook-conversation" aria-live="polite"></div>
-
-                <!-- Input area -->
-                <form id="doc-chat-form" class="notebook-input-form">
-                  <div class="notebook-input-wrap">
-                    <textarea id="doc-chat-input" rows="1" maxlength="4000" placeholder="Ask anything about this document..." autocomplete="off"></textarea>
-                    <button type="submit" id="doc-chat-send" class="notebook-send-btn" title="Send">
-                      <i data-lucide="arrow-up" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          </div><!-- /#panel-doc -->
-
-          <!-- HAND SIGN LOG PANEL -->
-          <div class="sidebar-panel" id="panel-handsign">
-            <div style="padding:0.85rem; display:flex; flex-direction:column; gap:0.65rem; flex:1; overflow:hidden;">
-              <h4 style="font-size:0.9rem;font-weight:700;display:flex;align-items:center;gap:0.45rem;">
-                <i data-lucide="hand" style="width:16px;height:16px;stroke:var(--accent-2);stroke-width:2;"></i>
-                Hand-Sign Feed
-              </h4>
-              <p class="muted small">Sign captions from all participants appear here in real time.</p>
-              <div id="sign-log-sidebar" class="sign-log" style="flex:1;max-height:none;" aria-live="polite"></div>
-            </div>
-          </div>
-
-        </div><!-- /.meeting-sidebar -->
-
-      </div><!-- /.meeting-content -->
-
-      <!-- Control bar -->
-      <div class="meeting-controls">
-        <div class="controls-center">
-          <div class="control-label">
-            <button type="button" id="btn-toggle-mic" class="icon-btn" title="Toggle microphone">
-              <i data-lucide="mic" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Mic</span>
-          </div>
-          <div class="control-label">
-            <button type="button" id="btn-toggle-cam" class="icon-btn" title="Toggle camera">
-              <i data-lucide="camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Camera</span>
-          </div>
-          <div class="control-label">
-            <button type="button" id="btn-switch-cam" class="icon-btn" title="Switch camera">
-              <i data-lucide="switch-camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Flip</span>
-          </div>
-          <div class="control-label">
-            <button type="button" id="btn-toggle-handsign-bar" class="icon-btn" title="Hand-sign captions">
-              <i data-lucide="hand" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Signs</span>
-          </div>
-          <div class="control-label">
-            <button type="button" id="btn-toggle-sidebar" class="icon-btn" title="Toggle chat sidebar">
-              <i data-lucide="message-square" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Chat</span>
-          </div>
-          <div class="control-label">
-            <button type="button" id="btn-open-doc" class="icon-btn" title="Open shared document">
-              <i data-lucide="file-text" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Document</span>
-          </div>
-          <div class="control-label" style="position:relative;">
-            <button type="button" id="btn-settings" class="icon-btn" title="Settings">
-              <i data-lucide="settings" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
-            </button>
-            <span>Settings</span>
-            <!-- Settings popup -->
-            <div id="settings-popup" class="settings-popup hidden">
-              <div class="settings-popup-header">
-                <i data-lucide="settings" style="width:14px;height:14px;stroke:var(--text-2);stroke-width:2;"></i>
-                <span>Meeting Settings</span>
+                <input type="checkbox" id="hand-sign-spell" class="hidden" />
               </div>
 
-              <div class="settings-row">
-                <div class="settings-row-left">
-                  <i data-lucide="subtitles" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-                  <span>Subtitles</span>
-                </div>
-                <label class="toggle-switch">
-                  <input type="checkbox" id="toggle-subtitles" />
-                  <span class="toggle-slider"></span>
+              <div id="hand-sign-tts-row" class="handsign-inline-row hidden">
+                <span class="handsign-row-label">Audio</span>
+                <label class="handsign-inline-toggle" aria-label="Read captions aloud">
+                  <span>Read captions aloud (browser TTS)</span>
+                  <span class="handsign-switch">
+                    <input type="checkbox" id="sign-tts-enable" />
+                    <span class="handsign-switch-slider"></span>
+                  </span>
                 </label>
               </div>
 
-              <div class="settings-row">
-                <div class="settings-row-left">
-                  <i data-lucide="languages" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-                  <span>From language</span>
-                </div>
-                <select id="subtitle-source-lang-select" class="settings-select">
-                  <option value="auto">Auto detect</option>
-                  <option value="en">English</option>
-                  <option value="my">Myanmar</option>
-                  <option value="th">Thai</option>
-                  <option value="ja">Japanese</option>
-                  <option value="zh">Chinese</option>
-                  <option value="ko">Korean</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="es">Spanish</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="ru">Russian</option>
-                  <option value="hi">Hindi</option>
-                  <option value="ar">Arabic</option>
-                  <option value="vi">Vietnamese</option>
-                  <option value="id">Indonesian</option>
-                  <option value="tr">Turkish</option>
-                  <option value="it">Italian</option>
-                  <option value="nl">Dutch</option>
-                  <option value="pl">Polish</option>
-                  <option value="uk">Ukrainian</option>
-                  <option value="sv">Swedish</option>
-                  <option value="ta">Tamil</option>
-                  <option value="bn">Bengali</option>
-                  <option value="ms">Malay</option>
-                  <option value="tl">Filipino</option>
-                </select>
+              <div class="spell-actions hidden" id="hand-sign-actions">
+                <button type="button" id="btn-spell-commit" class="small secondary">Send line</button>
+                <button type="button" id="btn-spell-clear" class="small secondary">Clear</button>
               </div>
+              <p class="hand-sign-hint" id="hand-sign-hint">
+                Turn on captions to choose mode and audio behavior.
+              </p>
+            </div>
 
-              <div class="settings-row">
-                <div class="settings-row-left">
-                  <i data-lucide="languages" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-                  <span>To language</span>
-                </div>
-                <select id="subtitle-lang-select" class="settings-select">
-                  <option value="">Original</option>
-                  <option value="en">English</option>
-                  <option value="my">Myanmar</option>
-                  <option value="th">Thai</option>
-                  <option value="ja">Japanese</option>
-                  <option value="zh">Chinese</option>
-                  <option value="ko">Korean</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="es">Spanish</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="ru">Russian</option>
-                  <option value="hi">Hindi</option>
-                  <option value="ar">Arabic</option>
-                  <option value="vi">Vietnamese</option>
-                  <option value="id">Indonesian</option>
-                  <option value="tr">Turkish</option>
-                  <option value="it">Italian</option>
-                  <option value="nl">Dutch</option>
-                  <option value="pl">Polish</option>
-                  <option value="uk">Ukrainian</option>
-                  <option value="sv">Swedish</option>
-                  <option value="ta">Tamil</option>
-                  <option value="bn">Bengali</option>
-                  <option value="ms">Malay</option>
-                  <option value="tl">Filipino</option>
-                </select>
+            <h4 class="handsign-panel-title">
+              <i data-lucide="hand" style="width:16px;height:16px;stroke:var(--accent-2);stroke-width:2;"></i>
+              Hand-Sign Feed
+            </h4>
+            <p class="muted small">Sign captions from all participants appear here in real time.</p>
+            <div id="sign-log" class="sign-log" aria-live="polite"></div>
+          </div>
+        </div>
+
+      </div><!-- /.meeting-sidebar -->
+
+    </div><!-- /.meeting-content -->
+
+    <!-- Control bar -->
+    <div class="meeting-controls">
+      <div class="controls-center">
+        <div class="control-label">
+          <button type="button" id="btn-toggle-mic" class="icon-btn" title="Toggle microphone">
+            <i data-lucide="mic" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Mic</span>
+        </div>
+        <div class="control-label">
+          <button type="button" id="btn-toggle-cam" class="icon-btn" title="Toggle camera">
+            <i data-lucide="camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Camera</span>
+        </div>
+        <div class="control-label">
+          <button type="button" id="btn-switch-cam" class="icon-btn" title="Switch camera">
+            <i data-lucide="switch-camera" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Flip</span>
+        </div>
+        <div class="control-label">
+          <button type="button" id="btn-toggle-handsign-bar" class="icon-btn" title="Hand-sign captions">
+            <i data-lucide="hand" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Signs</span>
+        </div>
+        <div class="control-label">
+          <button type="button" id="btn-toggle-sidebar" class="icon-btn" title="Toggle chat sidebar">
+            <i data-lucide="message-square" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Chat</span>
+        </div>
+        <div class="control-label">
+          <button type="button" id="btn-open-doc" class="icon-btn" title="Open shared document">
+            <i data-lucide="file-text" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Document</span>
+        </div>
+        <div class="control-label" style="position:relative;">
+          <button type="button" id="btn-settings" class="icon-btn" title="Settings">
+            <i data-lucide="settings" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+          </button>
+          <span>Settings</span>
+          <!-- Settings popup -->
+          <div id="settings-popup" class="settings-popup hidden">
+            <div class="settings-popup-header">
+              <i data-lucide="settings" style="width:14px;height:14px;stroke:var(--text-2);stroke-width:2;"></i>
+              <span>Meeting Settings</span>
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-left">
+                <i data-lucide="subtitles" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
+                <span>Subtitles</span>
               </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggle-subtitles" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-left">
+                <i data-lucide="languages" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
+                <span>From language</span>
+              </div>
+              <select id="subtitle-source-lang-select" class="settings-select">
+                <option value="auto">Auto detect</option>
+                <option value="en">English</option>
+                <option value="my">Myanmar</option>
+                <option value="th">Thai</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+                <option value="ko">Korean</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="es">Spanish</option>
+                <option value="pt">Portuguese</option>
+                <option value="ru">Russian</option>
+                <option value="hi">Hindi</option>
+                <option value="ar">Arabic</option>
+                <option value="vi">Vietnamese</option>
+                <option value="id">Indonesian</option>
+                <option value="tr">Turkish</option>
+                <option value="it">Italian</option>
+                <option value="nl">Dutch</option>
+                <option value="pl">Polish</option>
+                <option value="uk">Ukrainian</option>
+                <option value="sv">Swedish</option>
+                <option value="ta">Tamil</option>
+                <option value="bn">Bengali</option>
+                <option value="ms">Malay</option>
+                <option value="tl">Filipino</option>
+              </select>
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-left">
+                <i data-lucide="languages" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
+                <span>To language</span>
+              </div>
+              <select id="subtitle-lang-select" class="settings-select">
+                <option value="">Original</option>
+                <option value="en">English</option>
+                <option value="my">Myanmar</option>
+                <option value="th">Thai</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+                <option value="ko">Korean</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="es">Spanish</option>
+                <option value="pt">Portuguese</option>
+                <option value="ru">Russian</option>
+                <option value="hi">Hindi</option>
+                <option value="ar">Arabic</option>
+                <option value="vi">Vietnamese</option>
+                <option value="id">Indonesian</option>
+                <option value="tr">Turkish</option>
+                <option value="it">Italian</option>
+                <option value="nl">Dutch</option>
+                <option value="pl">Polish</option>
+                <option value="uk">Ukrainian</option>
+                <option value="sv">Swedish</option>
+                <option value="ta">Tamil</option>
+                <option value="bn">Bengali</option>
+                <option value="ms">Malay</option>
+                <option value="tl">Filipino</option>
+              </select>
             </div>
           </div>
         </div>
-        <div class="controls-right">
-          <button type="button" id="btn-leave" class="secondary small">
-            <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-            Leave
-          </button>
-          <button type="button" id="btn-end" class="danger small hidden">
-            <i data-lucide="x-circle" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-            End for all
-          </button>
-        </div>
       </div>
+      <div class="controls-right"></div>
+    </div>
 
-    </section><!-- /#view-meeting -->
+  </section><!-- /#view-meeting -->
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="/vendor/simplepeer.min.js"></script>
-    <script src="/vendor/handsigns-alphabet.js"></script>
-    <script src="/sign-labels.js"></script>
-    <script src="/hand-sign.js"></script>
-    <script src="/app.js"></script>
-    <script>
-      // Initialize Lucide icons after DOM is ready
-      if (window.lucide) lucide.createIcons();
-    </script>
-  </body>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/vendor/simplepeer.min.js"></script>
+  <script src="/vendor/handsigns-alphabet.js"></script>
+  <script src="/sign-labels.js"></script>
+  <script src="/hand-sign.js"></script>
+  <script src="/app.js"></script>
+  <script>
+    // Initialize Lucide icons after DOM is ready
+    if (window.lucide) lucide.createIcons();
+  </script>
+</body>
+
 </html>

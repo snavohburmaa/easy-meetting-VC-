@@ -1,6 +1,8 @@
 // Register PWA service worker
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  navigator.serviceWorker
+    .register("/sw.js", { updateViaCache: "none" })
+    .catch(() => {});
 }
 
 (function () {
@@ -31,6 +33,7 @@ if ("serviceWorker" in navigator) {
   let micMuted = false;
   let camMuted = false;
   let facingMode = "user"; // "user" = front, "environment" = back
+  const peerMediaStates = new Map();
 
   // Voice-to-text state (server-side Whisper)
   let sttMediaRecorder = null;
@@ -81,7 +84,7 @@ if ("serviceWorker" in navigator) {
     tl: "Filipino",
   };
 
-  // ── Token helpers ────────────────────────────────────────────
+  // â”€â”€ Token helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function getToken()    { return localStorage.getItem(TOKEN_KEY); }
   function setToken(t)   { localStorage.setItem(TOKEN_KEY, t); }
   function clearToken()  { localStorage.removeItem(TOKEN_KEY); }
@@ -99,7 +102,7 @@ if ("serviceWorker" in navigator) {
   }
 
 
-  // ── View management ──────────────────────────────────────────
+  // â”€â”€ View management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function showView(name) {
     ["view-login", "view-lobby", "view-meeting"].forEach((id) => {
       const el = $(id);
@@ -117,13 +120,20 @@ if ("serviceWorker" in navigator) {
     if (el) el.textContent = msg || "";
   }
 
-  // ── Sidebar management ───────────────────────────────────────
+  function syncMeetingLayoutState() {
+    const meetingView = $("view-meeting");
+    if (!meetingView) return;
+    meetingView.classList.toggle("sidebar-open", !!sidebarOpen);
+  }
+
+  // â”€â”€ Sidebar management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function openSidebar(tabName) {
     const sidebar = $("meeting-sidebar");
     if (!sidebar) return;
     sidebarOpen = true;
     sidebar.classList.remove("sidebar-hidden");
     switchSidebarTab(tabName || activeSidebarTab);
+    syncMeetingLayoutState();
     updateControlIcons();
   }
 
@@ -132,6 +142,7 @@ if ("serviceWorker" in navigator) {
     if (!sidebar) return;
     sidebarOpen = false;
     sidebar.classList.add("sidebar-hidden");
+    syncMeetingLayoutState();
     updateControlIcons();
   }
 
@@ -161,9 +172,11 @@ if ("serviceWorker" in navigator) {
     if (btn) btn.classList.toggle("active", sidebarOpen && activeSidebarTab === "chat");
     const docBtn = $("btn-open-doc");
     if (docBtn) docBtn.classList.toggle("active", sidebarOpen && activeSidebarTab === "doc");
+    const signBtn = $("btn-toggle-handsign-bar");
+    if (signBtn) signBtn.classList.toggle("active", sidebarOpen && activeSidebarTab === "handsign");
   }
 
-  // ── Insight tabs ─────────────────────────────────────────────
+  // â”€â”€ Insight tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function initInsightTabs() {
     if (!document.querySelector(".insight-tab")) return;
     document.querySelectorAll(".insight-tab").forEach((tab) => {
@@ -199,13 +212,52 @@ if ("serviceWorker" in navigator) {
     });
   }
 
-  // ── Mic / Cam toggle ─────────────────────────────────────────
+  // â”€â”€ Mic / Cam toggle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function svgIcon(name) {
     return `<i data-lucide="${name}" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>`;
   }
 
   function renderIcons() {
     if (window.lucide) window.lucide.createIcons();
+  }
+
+  function updateVideoLayout() {
+    const grid = $("meeting-grid");
+    if (!grid) return;
+    const total = 1 + peers.size;
+    grid.classList.remove("layout-1", "layout-2", "layout-3-4", "layout-5-plus");
+    if (total <= 1) grid.classList.add("layout-1");
+    else if (total === 2) grid.classList.add("layout-2");
+    else if (total <= 4) grid.classList.add("layout-3-4");
+    else grid.classList.add("layout-5-plus");
+  }
+
+  function applyTileMediaState(tileEl, state) {
+    if (!tileEl) return;
+    const micOff = !!(state && state.micMuted);
+    const camOff = !!(state && state.camMuted);
+    const indicators = tileEl.querySelector(".media-state-indicators");
+    if (indicators) {
+      indicators.innerHTML = "";
+      if (micOff) {
+        const micBadge = document.createElement("span");
+        micBadge.className = "media-state-badge media-state-badge--mic";
+        micBadge.innerHTML = '<i data-lucide="mic-off"></i>';
+        indicators.appendChild(micBadge);
+      }
+      renderIcons();
+    }
+    tileEl.classList.toggle("cam-off", camOff);
+    tileEl.classList.toggle("cam-on", !camOff);
+  }
+
+  function applyLocalMediaState() {
+    applyTileMediaState($("local-tile"), { micMuted, camMuted });
+  }
+
+  function emitMediaState() {
+    if (!socket || !socket.connected || !meetingState.code) return;
+    socket.emit("media:state", { micMuted: !!micMuted, camMuted: !!camMuted });
   }
 
   function setMicMuted(muted) {
@@ -220,6 +272,8 @@ if ("serviceWorker" in navigator) {
       btn.title = muted ? "Unmute microphone" : "Mute microphone";
       renderIcons();
     }
+    applyLocalMediaState();
+    emitMediaState();
   }
 
   function setCamMuted(muted) {
@@ -234,9 +288,11 @@ if ("serviceWorker" in navigator) {
       btn.title = muted ? "Turn on camera" : "Turn off camera";
       renderIcons();
     }
+    applyLocalMediaState();
+    emitMediaState();
   }
 
-  // ── Switch camera (front/back) ───────────────────────────────
+  // â”€â”€ Switch camera (front/back) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function switchCamera() {
     if (!localStream) return;
     facingMode = facingMode === "user" ? "environment" : "user";
@@ -282,7 +338,7 @@ if ("serviceWorker" in navigator) {
     }
   }
 
-  // ── Lobby user display ───────────────────────────────────────
+  // â”€â”€ Lobby user display â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function decodeJwtPayload(token) {
     try {
       const parts = token.split(".");
@@ -302,11 +358,11 @@ if ("serviceWorker" in navigator) {
     const payload = decodeJwtPayload(t);
     const name  = (payload && (payload.name  || payload.email)) || "Signed in";
     const email = (payload && payload.email) || "";
-    if (legacyChip) legacyChip.textContent = name + (email ? " · " + email : "");
+    if (legacyChip) legacyChip.textContent = name + (email ? " Â· " + email : "");
     if (av) av.textContent = name.charAt(0).toUpperCase();
   }
 
-  // ── Subtitle helpers ─────────────────────────────────────────
+  // â”€â”€ Subtitle helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function setSubtitlesEnabled(enabled) {
     subtitlesEnabled = !!enabled;
     const subtitleToggle = $("toggle-subtitles");
@@ -346,7 +402,7 @@ if ("serviceWorker" in navigator) {
 
     const sourceLabel = subtitleLangLabel(sourceLang, "Source");
     const targetLabel = subtitleLangLabel(subtitleLang || sourceLang, "Original");
-    meta.textContent = sourceLabel + " → " + targetLabel + (speaker ? " · " + speaker : "");
+    meta.textContent = sourceLabel + " â†’ " + targetLabel + (speaker ? " Â· " + speaker : "");
     textEl.textContent = displayText;
     clearTimeout(hideGlobalSubtitle._timer);
     hideGlobalSubtitle._timer = setTimeout(() => hideGlobalSubtitle(), 6000);
@@ -354,16 +410,7 @@ if ("serviceWorker" in navigator) {
 
   function renderLocalSignSubtitle() {
     const el = $("local-sign-subtitle");
-    if (!el) return;
-    if (!lastLocalSignLine && !localSpellDraft) { el.textContent = ""; return; }
-    el.textContent = "";
-    if (lastLocalSignLine) el.appendChild(document.createTextNode(lastLocalSignLine));
-    if (localSpellDraft) {
-      const span = document.createElement("span");
-      span.className = "sign-draft";
-      span.textContent = "Spelling: " + localSpellDraft;
-      el.appendChild(span);
-    }
+    if (el) el.textContent = "";
   }
 
   function setRemoteSignSubtitle(peerId, data) {
@@ -372,12 +419,12 @@ if ("serviceWorker" in navigator) {
     const sub = wrap.querySelector(".remote-sign-subtitle");
     if (!sub) return;
     let line = data.text || "";
-    if (data.translatedText) line += " · " + data.translatedText;
+    if (data.translatedText) line += " Â· " + data.translatedText;
     const kind = data.kind && data.kind !== "gesture" ? " [" + data.kind + "]" : "";
     sub.textContent = line ? line + kind : "";
   }
 
-  // ── STT subtitle helpers (real-time translated voice) ────────
+  // â”€â”€ STT subtitle helpers (real-time translated voice) â”€â”€â”€â”€â”€â”€â”€â”€
   function clearSttSubtitleTimer(key) {
     const t = sttSubtitleTimers.get(key);
     if (t) { clearTimeout(t); sttSubtitleTimers.delete(key); }
@@ -392,7 +439,7 @@ if ("serviceWorker" in navigator) {
 
   function sttSubtitleText(data) {
     let line = data && data.text ? String(data.text) : "";
-    if (data && data.translatedText) line += " → " + data.translatedText;
+    if (data && data.translatedText) line += " â†’ " + data.translatedText;
     return line;
   }
 
@@ -412,7 +459,7 @@ if ("serviceWorker" in navigator) {
     scheduleSttSubtitleClear("remote:" + peerId, sub);
   }
 
-  // ── TTS ──────────────────────────────────────────────────────
+  // â”€â”€ TTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function flushTtsQueue() {
     if (!window.speechSynthesis) return;
     const chk = $("sign-tts-enable");
@@ -444,7 +491,7 @@ if ("serviceWorker" in navigator) {
     if (!document.hidden) flushTtsQueue();
   });
 
-  // ── PDF helpers ──────────────────────────────────────────────
+  // â”€â”€ PDF helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function hidePdfPreview() {
     const wrap = $("doc-pdf-wrap");
     const noPrev = $("doc-no-preview");
@@ -518,7 +565,7 @@ if ("serviceWorker" in navigator) {
     }
   }
 
-  // ── Document panel helpers ───────────────────────────────────
+  // â”€â”€ Document panel helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function resetDocPanel() {
     if (docPdfBlobUrl) { try { URL.revokeObjectURL(docPdfBlobUrl); } catch (_) {} docPdfBlobUrl = null; }
     pdfDoc = null;
@@ -551,14 +598,14 @@ if ("serviceWorker" in navigator) {
     const st = $("doc-status");
     if (st) {
       st.innerHTML = '<span class="notebook-source-item"><i data-lucide="file-check" style="width:12px;height:12px;stroke:var(--green);stroke-width:2;"></i> ' +
-        (d.fileName || "Document") + " — ready</span>";
+        (d.fileName || "Document") + " â€” ready</span>";
       renderIcons();
     }
     activeDocId = d.docId || null;
     hidePdfPreview();
   }
 
-  // ── NotebookLM-style conversation rendering ──────────────────
+  // â”€â”€ NotebookLM-style conversation rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function renderNotebookConversation() {
     const container = $("notebook-conversation");
     if (!container) return;
@@ -580,7 +627,7 @@ if ("serviceWorker" in navigator) {
       if (msg.role === "user") {
         bubble.textContent = msg.text;
       } else {
-        // AI response — render with basic markdown-like formatting
+        // AI response â€” render with basic markdown-like formatting
         bubble.innerHTML = formatAiResponse(msg.text);
       }
       container.appendChild(bubble);
@@ -611,7 +658,7 @@ if ("serviceWorker" in navigator) {
     return d.innerHTML;
   }
 
-  // ── Subtitle translation helper ────────────────────────────
+  // â”€â”€ Subtitle translation helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const _translateCache = new Map();
   async function translateForSubtitle(text, sourceLang) {
     if (!subtitleLang || !text.trim()) return text;
@@ -643,11 +690,11 @@ if ("serviceWorker" in navigator) {
     }
   }
 
-  // ── Voice-to-Text (Server-side Whisper) ─────────────────────
+  // â”€â”€ Voice-to-Text (Server-side Whisper) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const STT_CHUNK_MS = 4000; // send audio every 4 seconds
 
   function initStt() {
-    // Nothing to initialize — MediaRecorder is created on start
+    // Nothing to initialize â€” MediaRecorder is created on start
   }
 
   function startStt() {
@@ -727,7 +774,7 @@ if ("serviceWorker" in navigator) {
     }
   }
 
-  // ── Socket handlers ──────────────────────────────────────────
+  // â”€â”€ Socket handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function clearLobbyError()  { const el = $("lobby-error");  if (el) el.textContent = ""; }
   function clearLoginError()  { const el = $("login-error");  if (el) el.textContent = ""; }
 
@@ -756,6 +803,15 @@ if ("serviceWorker" in navigator) {
 
     socket.on("peer:joined", ({ peerId, name }) => { addPeer(peerId, name || "Guest"); });
     socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); });
+    socket.on("media:state", (data) => {
+      const peerId = typeof data?.socketId === "string" ? data.socketId : "";
+      if (!peerId) return;
+      if (socket && peerId === socket.id) return;
+      const state = { micMuted: !!data.micMuted, camMuted: !!data.camMuted };
+      peerMediaStates.set(peerId, state);
+      const wrap = document.getElementById("remote-" + peerId);
+      if (wrap) applyTileMediaState(wrap, state);
+    });
 
     socket.on("chat:message", (data) => {
       const log = $("chat-log");
@@ -782,7 +838,7 @@ if ("serviceWorker" in navigator) {
           line.className = "sign-line";
           const t = new Date(data.at).toLocaleTimeString();
           let body = `${data.from}: ${data.text}`;
-          if (data.translatedText) body += ` → ${data.translatedText}`;
+          if (data.translatedText) body += ` â†’ ${data.translatedText}`;
           if (data.kind && data.kind !== "gesture") body += ` (${data.kind})`;
           line.textContent = `[${t}] ${body}`;
           signLog.appendChild(line);
@@ -804,7 +860,7 @@ if ("serviceWorker" in navigator) {
       flushTtsQueue();
     });
 
-    /* ── Real-time translated STT subtitles ── */
+    /* â”€â”€ Real-time translated STT subtitles â”€â”€ */
     socket.on("stt:message", (data) => {
       if (!subtitlesEnabled) return;
       const isSelf = socket && data.socketId === socket.id;
@@ -820,7 +876,7 @@ if ("serviceWorker" in navigator) {
       }
     });
 
-    /* ── Real-time voice captions from other users ── */
+    /* â”€â”€ Real-time voice captions from other users â”€â”€ */
     socket.on("caption:voice", (data) => {
       const peerId = data.socketId;
       if (!peerId) return;
@@ -855,7 +911,7 @@ if ("serviceWorker" in navigator) {
           localSub.textContent = "";
           hideGlobalSubtitle();
         }
-        // (subtitles only — no chat input fill)
+        // (subtitles only â€” no chat input fill)
         return;
       }
 
@@ -908,7 +964,7 @@ if ("serviceWorker" in navigator) {
 
     socket.on("doc:ready", (d) => {
       const st = $("doc-status");
-      if (st) st.textContent = (d.fileName || "") + " · source: " + (d.sourceLanguage || "?");
+      if (st) st.textContent = (d.fileName || "") + " Â· source: " + (d.sourceLanguage || "?");
     });
 
     socket.on("doc:payload", (d) => { applyDocPayload(d); });
@@ -926,8 +982,8 @@ if ("serviceWorker" in navigator) {
     socket.on("room:ended", async ({ reason }) => {
       const labels = {
         host_ended: "Meeting ended by host.",
-        host_left:  "Host left — meeting closed.",
-        empty:      "Everyone left — meeting closed.",
+        host_left:  "Host left â€” meeting closed.",
+        empty:      "Everyone left â€” meeting closed.",
       };
       meetingStatus(labels[reason] || "Meeting ended.");
       await cleanupMeeting();
@@ -936,10 +992,12 @@ if ("serviceWorker" in navigator) {
     });
   }
 
-  // ── Peer management ──────────────────────────────────────────
+  // â”€â”€ Peer management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function setupLocalVideo() {
     const v = $("local-video");
     if (v) v.srcObject = localStream;
+    applyLocalMediaState();
+    updateVideoLayout();
   }
 
   function addPeer(peerId, remoteName) {
@@ -968,31 +1026,46 @@ if ("serviceWorker" in navigator) {
         const sttSub = document.createElement("div");
         sttSub.className = "video-subtitle stt-subtitle remote-stt-subtitle";
         sttSub.setAttribute("aria-live", "polite");
+        const indicators = document.createElement("div");
+        indicators.className = "media-state-indicators";
+        indicators.setAttribute("aria-live", "polite");
+        const offPlaceholder = document.createElement("div");
+        offPlaceholder.className = "video-off-placeholder";
+        offPlaceholder.setAttribute("aria-hidden", "true");
+        offPlaceholder.innerHTML = '<i data-lucide="camera-off" style="width:72px;height:72px;stroke:rgba(255,255,255,0.92);stroke-width:2.2;"></i>';
         const lab = document.createElement("span");
         lab.className = "label";
         lab.textContent = remoteName || "Guest";
         wrap.appendChild(vid);
         wrap.appendChild(sub);
         wrap.appendChild(sttSub);
+        wrap.appendChild(indicators);
+        wrap.appendChild(offPlaceholder);
         wrap.appendChild(lab);
         $("remote-videos").appendChild(wrap);
+        renderIcons();
       }
+      applyTileMediaState(wrap, peerMediaStates.get(peerId) || { micMuted: false, camMuted: false });
+      updateVideoLayout();
     });
 
     peer.on("close", () => removePeer(peerId));
     peer.on("error", (e) => console.warn("peer error", peerId, e));
     peers.set(peerId, peer);
+    updateVideoLayout();
   }
 
   function removePeer(peerId) {
     clearSttSubtitleTimer("remote:" + peerId);
+    peerMediaStates.delete(peerId);
     const peer = peers.get(peerId);
     if (peer) { try { peer.destroy(); } catch (_) {} peers.delete(peerId); }
     const wrap = document.getElementById("remote-" + peerId);
     if (wrap) wrap.remove();
+    updateVideoLayout();
   }
 
-  // ── Meeting lifecycle ────────────────────────────────────────
+  // â”€â”€ Meeting lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function updateMeetingMeta(ack) {
     meetingState = { code: ack.code, joinUrl: ack.joinUrl || "", isHost: !!ack.isHost };
     $('meeting-code-label').textContent = ack.code;
@@ -1000,14 +1073,18 @@ if ("serviceWorker" in navigator) {
     $("btn-end").classList.toggle("hidden", !ack.isHost);
     meetingStatus("");
     $("chat-log").innerHTML = "";
+    peerMediaStates.clear();
     ["sign-log","sign-log-sidebar"].forEach(id => { const el = $(id); if(el) el.innerHTML = ""; });
     const hs = $("hand-sign-enable");
     if (hs) hs.checked = false;
     const sp = $("hand-sign-spell");
     if (sp) sp.checked = false;
+    const tts = $("sign-tts-enable");
+    if (tts) tts.checked = false;
     lastLocalSignLine = "";
     localSpellDraft = "";
     renderLocalSignSubtitle();
+    syncHandSignUiState();
     document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
     document.querySelectorAll(".remote-voice-subtitle").forEach(n => { n.textContent = ""; });
     document.querySelectorAll(".remote-stt-subtitle").forEach(n => { n.textContent = ""; });
@@ -1024,6 +1101,7 @@ if ("serviceWorker" in navigator) {
     setMicMuted(true);
     setCamMuted(true);
     setSubtitlesEnabled(false);
+    updateVideoLayout();
   }
 
   async function stopHandSignCaptions() {
@@ -1032,8 +1110,13 @@ if ("serviceWorker" in navigator) {
     }
     const hs = $("hand-sign-enable");
     if (hs) hs.checked = false;
+    const sp = $("hand-sign-spell");
+    if (sp) sp.checked = false;
+    const tts = $("sign-tts-enable");
+    if (tts) tts.checked = false;
     localSpellDraft = "";
     renderLocalSignSubtitle();
+    syncHandSignUiState();
   }
 
   async function cleanupMeeting() {
@@ -1065,10 +1148,11 @@ if ("serviceWorker" in navigator) {
     meetingStatus("");
     const qr = $("qr-img"); if (qr) qr.removeAttribute("src");
     closeSidebar();
-    const hsBar = $("hand-sign-bar"); if(hsBar) hsBar.style.display = "none";
     const sp = $("settings-popup"); if (sp) sp.classList.add("hidden");
     const sb = $("btn-settings"); if (sb) sb.classList.remove("active");
     micMuted = false; camMuted = false;
+    applyLocalMediaState();
+    updateVideoLayout();
   }
 
   function buildSocketOpts() {
@@ -1159,15 +1243,27 @@ if ("serviceWorker" in navigator) {
     if (socket && socket.connected) socket.emit("room:end");
   }
 
-  // ── Hand-sign captions ───────────────────────────────────────
+  // â”€â”€ Hand-sign captions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function syncHandSignFromCheckbox() {
     const el = $("hand-sign-enable");
     const video = $("local-video");
     if (!el || !video) return;
+    syncHandSignUiState();
+
     const want = el.checked;
     if (want) {
-      if (!window.HandSignCaptions) { meetingStatus("Hand-sign script not loaded."); el.checked = false; return; }
-      if (!window.HandSignAlphabetKit) { meetingStatus("Missing vendor/handsigns-alphabet.js — run: npm run build:handsigns"); el.checked = false; return; }
+      if (!window.HandSignCaptions) {
+        meetingStatus("Hand-sign script not loaded.");
+        el.checked = false;
+        syncHandSignUiState();
+        return;
+      }
+      if (!window.HandSignAlphabetKit) {
+        meetingStatus("Missing vendor/handsigns-alphabet.js - run: npm run build:handsigns");
+        el.checked = false;
+        syncHandSignUiState();
+        return;
+      }
       try {
         meetingStatus("Loading hand models...");
         await window.HandSignCaptions.start(
@@ -1175,8 +1271,11 @@ if ("serviceWorker" in navigator) {
           (payload) => {
             if (socket && socket.connected) {
               socket.emit("sign:caption", {
-                text: payload.text, gestureKey: payload.gestureKey,
-                kind: payload.kind || "gesture", lang: payload.lang, translatedText: payload.translatedText,
+                text: payload.text,
+                gestureKey: payload.gestureKey,
+                kind: payload.kind || "gesture",
+                lang: payload.lang,
+                translatedText: payload.translatedText,
               });
             }
             if (payload.kind !== "spell" || payload.text) {
@@ -1185,7 +1284,10 @@ if ("serviceWorker" in navigator) {
             }
           },
           {
-            getSpellMode: () => { const e = $("hand-sign-spell"); return !!(e && e.checked); },
+            getSpellMode: () => {
+              const e = $("hand-sign-spell");
+              return !!(e && e.checked);
+            },
             onSpellPreview: (state) => {
               localSpellDraft = state && state.buffer ? state.buffer : "";
               renderLocalSignSubtitle();
@@ -1201,9 +1303,55 @@ if ("serviceWorker" in navigator) {
     } else if (window.HandSignCaptions) {
       try { await window.HandSignCaptions.stop(); } catch (_) {}
     }
+
+    syncHandSignUiState();
   }
 
-  // ── Login ────────────────────────────────────────────────────
+  function syncHandSignUiState() {
+    const hs = $("hand-sign-enable");
+    const sp = $("hand-sign-spell");
+    const tts = $("sign-tts-enable");
+    const enabled = !!(hs && hs.checked);
+    const spell = !!(enabled && sp && sp.checked);
+    const status = $("hand-sign-status");
+    const modeRow = $("hand-sign-mode-row");
+    const ttsRow = $("hand-sign-tts-row");
+    const actions = $("hand-sign-actions");
+    const hint = $("hand-sign-hint");
+    const modeGesture = $("btn-hand-mode-gesture");
+    const modeSpell = $("btn-hand-mode-spell");
+
+    if (status) {
+      status.textContent = !enabled ? "Off" : (spell ? "On • Spell" : "On • Gesture");
+      status.classList.toggle("on", enabled);
+    }
+    if (modeRow) modeRow.classList.toggle("hidden", !enabled);
+    if (ttsRow) ttsRow.classList.toggle("hidden", !enabled);
+    if (actions) actions.classList.toggle("hidden", !spell);
+
+    if (hint) {
+      hint.textContent = !enabled
+        ? "Turn on captions to choose mode and audio behavior."
+        : (spell
+          ? "Finger-spelling: A-Z, open palm = space, hold fist ~1/3s to send."
+          : "Gesture mode uses MediaPipe gestures + fingerpose.");
+    }
+
+    if (modeGesture) {
+      modeGesture.classList.toggle("active", !spell);
+      modeGesture.disabled = !enabled;
+    }
+    if (modeSpell) {
+      modeSpell.classList.toggle("active", spell);
+      modeSpell.disabled = !enabled;
+    }
+
+    if (!enabled) {
+      if (sp) sp.checked = false;
+      if (tts) tts.checked = false;
+    }
+  }
+  // â”€â”€ Login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function submitLogin(ev) {
     ev.preventDefault();
     clearLoginError();
@@ -1218,7 +1366,7 @@ if ("serviceWorker" in navigator) {
       });
     } catch (err) {
       $("login-error").textContent =
-        "Network error — is the server running? (npm start) " + String(err && err.message ? err.message : err);
+        "Network error â€” is the server running? (npm start) " + String(err && err.message ? err.message : err);
       return;
     }
     const raw = await res.text();
@@ -1227,7 +1375,7 @@ if ("serviceWorker" in navigator) {
     if (!res.ok) {
       $("login-error").textContent =
         data.error || (res.status === 404 || res.status === 405
-          ? "API not found — run the backend: npm start"
+          ? "API not found â€” run the backend: npm start"
           : `Request failed (${res.status}).`);
       return;
     }
@@ -1254,7 +1402,7 @@ if ("serviceWorker" in navigator) {
     showView("login");
   }
 
-  // ── Wire up all event listeners ──────────────────────────────
+  // â”€â”€ Wire up all event listeners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function wireEvents() {
     // Login
     $("form-login").addEventListener("submit", submitLogin);
@@ -1312,12 +1460,9 @@ if ("serviceWorker" in navigator) {
     });
 
     $("btn-toggle-handsign-bar").addEventListener("click", () => {
-      const bar = $("hand-sign-bar");
-      if (!bar) return;
-      const isHidden = bar.style.display === "none" || bar.style.display === "";
-      bar.style.display = isHidden ? "flex" : "none";
-      const btn = $("btn-toggle-handsign-bar");
-      if (btn) btn.classList.toggle("active", isHidden);
+      toggleSidebar("handsign");
+      syncHandSignUiState();
+      updateControlIcons();
     });
 
     // Settings popup
@@ -1342,7 +1487,7 @@ if ("serviceWorker" in navigator) {
       });
     }
 
-    // Subtitle toggle — also auto-start/stop STT
+    // Subtitle toggle â€” also auto-start/stop STT
     const subtitleToggle = $("toggle-subtitles");
     if (subtitleToggle) {
       subtitleToggle.addEventListener("change", () => setSubtitlesEnabled(subtitleToggle.checked));
@@ -1397,18 +1542,59 @@ if ("serviceWorker" in navigator) {
       input.value = "";
     });
 
-    // (STT mic button and lang select removed from chat — subtitles controlled via Settings)
+    // (STT mic button and lang select removed from chat â€” subtitles controlled via Settings)
 
-    // Hand-sign checkboxes
+    // Hand-sign controls
     const handSignCb = $("hand-sign-enable");
-    if (handSignCb) handSignCb.addEventListener("change", () => void syncHandSignFromCheckbox());
+    if (handSignCb) {
+      handSignCb.addEventListener("change", () => {
+        syncHandSignUiState();
+        void syncHandSignFromCheckbox();
+      });
+    }
 
     const spellCb = $("hand-sign-spell");
-    if (spellCb) spellCb.addEventListener("change", () => {
-      if (window.HandSignCaptions && window.HandSignCaptions.isRunning()) {
-        if (!spellCb.checked) window.HandSignCaptions.clearSpellBuffer();
-      }
-    });
+    if (spellCb) {
+      spellCb.addEventListener("change", () => {
+        syncHandSignUiState();
+        if (window.HandSignCaptions && window.HandSignCaptions.isRunning()) {
+          if (!spellCb.checked) window.HandSignCaptions.clearSpellBuffer();
+        }
+      });
+    }
+
+    const modeGestureBtn = $("btn-hand-mode-gesture");
+    if (modeGestureBtn) {
+      modeGestureBtn.addEventListener("click", () => {
+        const hs = $("hand-sign-enable");
+        const sp = $("hand-sign-spell");
+        if (!hs || !sp || !hs.checked) return;
+        sp.checked = false;
+        sp.dispatchEvent(new Event("change"));
+      });
+    }
+
+    const modeSpellBtn = $("btn-hand-mode-spell");
+    if (modeSpellBtn) {
+      modeSpellBtn.addEventListener("click", () => {
+        const hs = $("hand-sign-enable");
+        const sp = $("hand-sign-spell");
+        if (!hs || !sp || !hs.checked) return;
+        sp.checked = true;
+        sp.dispatchEvent(new Event("change"));
+      });
+    }
+
+    const signTtsCb = $("sign-tts-enable");
+    if (signTtsCb) {
+      signTtsCb.addEventListener("change", () => {
+        if (!signTtsCb.checked && window.speechSynthesis) {
+          try { speechSynthesis.cancel(); } catch (_) {}
+        }
+      });
+    }
+
+    syncHandSignUiState();
 
     // Spell buttons
     function spellNeedHandSign() {
@@ -1423,7 +1609,7 @@ if ("serviceWorker" in navigator) {
         const before = window.HandSignCaptions.getSpellBuffer
           ? String(window.HandSignCaptions.getSpellBuffer() || "").trim() : "";
         window.HandSignCaptions.commitSpell();
-        if (!before) { meetingStatus("Nothing to send yet — hold each letter steady until it appears."); setTimeout(() => meetingStatus(""), 5000); }
+        if (!before) { meetingStatus("Nothing to send yet â€” hold each letter steady until it appears."); setTimeout(() => meetingStatus(""), 5000); }
         else meetingStatus("");
       });
     }
@@ -1442,7 +1628,7 @@ if ("serviceWorker" in navigator) {
     const docLang = $("doc-lang-select");
     if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
 
-    // (recv-lang-select removed — "To language" in Settings handles this now)
+    // (recv-lang-select removed â€” "To language" in Settings handles this now)
 
     // Doc file upload
     const docFile = $("doc-file-input");
@@ -1470,7 +1656,7 @@ if ("serviceWorker" in navigator) {
             fetchOpts
           );
           const data = await res.json().catch(() => ({}));
-          if (res.status === 202) meetingStatus("Document queued — AI is processing...");
+          if (res.status === 202) meetingStatus("Document queued â€” AI is processing...");
           else if (!res.ok) meetingStatus("Upload failed: " + (data.error || data.message || res.statusText));
         } catch (err) {
           meetingStatus("Upload failed: " + String(err && err.message ? err.message : err));
@@ -1555,7 +1741,7 @@ if ("serviceWorker" in navigator) {
     initSidebarTabs();
   }
 
-  // ── Boot ─────────────────────────────────────────────────────
+  // â”€â”€ Boot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function boot() {
     wireEvents();
     initStt();
@@ -1575,3 +1761,8 @@ if ("serviceWorker" in navigator) {
 
   boot();
 })();
+
+
+
+
+

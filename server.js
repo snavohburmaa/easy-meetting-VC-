@@ -247,6 +247,7 @@ async function clearRoomSockets(code) {
 io.on("connection", (socket) => {
   socket.data.roomCode = null;
   socket.data.preferredLanguage = "en";
+  socket.data.mediaState = { micMuted: false, camMuted: false };
 
   socket.on("room:create", (ack) => {
     if (socket.data.roomCode) {
@@ -301,6 +302,27 @@ io.on("connection", (socket) => {
       name: socket.user.name,
     });
 
+    // Broadcast joiner's initial media state and send existing participants' states to joiner.
+    const joinerState = socket.data.mediaState || { micMuted: false, camMuted: false };
+    socket.to(codeRaw).emit("media:state", {
+      socketId: socket.id,
+      micMuted: !!joinerState.micMuted,
+      camMuted: !!joinerState.camMuted,
+      at: Date.now(),
+    });
+    io.in(codeRaw).fetchSockets().then((socks) => {
+      for (const s of socks) {
+        if (s.id === socket.id) continue;
+        const st = s.data.mediaState || { micMuted: false, camMuted: false };
+        socket.emit("media:state", {
+          socketId: s.id,
+          micMuted: !!st.micMuted,
+          camMuted: !!st.camMuted,
+          at: Date.now(),
+        });
+      }
+    }).catch(() => {});
+
     // Emit user's private doc if they have one, otherwise shared room doc
     meetingDoc.emitUserPayloadForOneSocket(io, socket, codeRaw).catch(() => {});
     meetingDoc.emitPayloadForOneSocket(io, socket, codeRaw).catch((err) => console.error("[doc emit]", err));
@@ -327,6 +349,20 @@ io.on("connection", (socket) => {
       at: Date.now(),
       from: socket.user.name,
       socketId: socket.id,
+    });
+  });
+
+  socket.on("media:state", (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const micMuted = !!payload?.micMuted;
+    const camMuted = !!payload?.camMuted;
+    socket.data.mediaState = { micMuted, camMuted };
+    socket.to(code).emit("media:state", {
+      socketId: socket.id,
+      micMuted,
+      camMuted,
+      at: Date.now(),
     });
   });
 

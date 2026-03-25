@@ -1,11 +1,12 @@
-const CACHE_NAME = "ez-meeting-v1";
+const CACHE_NAME = "ez-meeting-v2";
 const PRECACHE = [
   "/",
   "/styles.css",
   "/app.js",
   "/manifest.json",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
+  "/icons/icon-192.svg",
+  "/icons/icon-512.svg",
+  "/icons/icon-maskable-512.svg",
 ];
 
 self.addEventListener("install", (e) => {
@@ -36,20 +37,25 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Network-first for HTML, cache-first for assets
-  if (e.request.headers.get("accept")?.includes("text/html")) {
+  // Use network-first for same-origin pages/assets so UI updates show up on normal reload.
+  const isSameOrigin = url.origin === self.location.origin;
+  if (isSameOrigin) {
     e.respondWith(
       fetch(e.request)
         .then((res) => {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+          if (res && res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+          }
           return res;
         })
         .catch(() => caches.match(e.request))
     );
-  } else {
-    e.respondWith(
-      caches.match(e.request).then((cached) => cached || fetch(e.request))
-    );
+    return;
   }
+
+  // Fallback for cross-origin assets.
+  e.respondWith(
+    caches.match(e.request).then((cached) => cached || fetch(e.request))
+  );
 });
