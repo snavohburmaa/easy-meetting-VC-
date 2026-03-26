@@ -1,20 +1,21 @@
 """
 Whisper transcription microservice.
 Receives audio via HTTP POST, returns transcribed text.
-Runs alongside the Node.js server on the same Railway instance.
+Runs alongside the Node.js server on the same machine.
+Uses openai-whisper (pip install openai-whisper).
 """
 
 import os
 import tempfile
-from faster_whisper import WhisperModel
+import whisper
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 print(f"[whisper] Loading model: {MODEL_SIZE} ...")
-model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
-print(f"[whisper] Model loaded.")
+model = whisper.load_model(MODEL_SIZE)
+print(f"[whisper] Model loaded. Language forced to English.")
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -26,7 +27,6 @@ def transcribe():
     language = request.form.get("language", None)
 
     # Write to a temp file so Whisper/ffmpeg can read it
-    # Detect format from filename or content type (Safari sends mp4, Chrome sends webm)
     orig_name = audio_file.filename or "chunk.webm"
     if orig_name.endswith(".mp4") or orig_name.endswith(".m4a"):
         suffix = ".mp4"
@@ -39,11 +39,9 @@ def transcribe():
         tmp_path = tmp.name
 
     try:
-        lang = language if (language and language != "auto") else None
-        segments, info = model.transcribe(tmp_path, language=lang)
-        text = " ".join(segment.text for segment in segments).strip()
-        detected_lang = info.language if info else ""
-        return jsonify({"text": text, "language": detected_lang})
+        result = model.transcribe(tmp_path, language="en", fp16=False)
+        text = (result.get("text") or "").strip()
+        return jsonify({"text": text, "language": "en"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

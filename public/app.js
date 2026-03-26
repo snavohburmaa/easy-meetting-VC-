@@ -29,15 +29,46 @@ if ("serviceWorker" in navigator) {
   let micMuted = false;
   let camMuted = false;
   let facingMode = "user"; // "user" = front, "environment" = back
+  let screenStream = null;
+  let screenSharing = false;
 
-  // Voice-to-text state (server-side Whisper)
-  let sttMediaRecorder = null;
+  // Voice-to-text state (browser SpeechRecognition)
+  let sttRecognition = null;
   let sttActive = false;
-  let sttChunkInterval = null;
 
   // Subtitle settings
   let subtitlesEnabled = false;
-  let subtitleLang = ""; // "" = original (no translation)
+
+  // Language preferences
+  const LANGUAGES = {
+    en: { name: "English",    speechCode: "en-US" },
+    my: { name: "Myanmar",    speechCode: "my-MM" },
+    th: { name: "Thai",       speechCode: "th-TH" },
+    ja: { name: "Japanese",   speechCode: "ja-JP" },
+    zh: { name: "Chinese",    speechCode: "zh-CN" },
+    ko: { name: "Korean",     speechCode: "ko-KR" },
+    fr: { name: "French",     speechCode: "fr-FR" },
+    de: { name: "German",     speechCode: "de-DE" },
+    es: { name: "Spanish",    speechCode: "es-ES" },
+    pt: { name: "Portuguese", speechCode: "pt-BR" },
+    ru: { name: "Russian",    speechCode: "ru-RU" },
+    hi: { name: "Hindi",      speechCode: "hi-IN" },
+    ar: { name: "Arabic",     speechCode: "ar-SA" },
+    vi: { name: "Vietnamese", speechCode: "vi-VN" },
+    id: { name: "Indonesian", speechCode: "id-ID" },
+    tr: { name: "Turkish",    speechCode: "tr-TR" },
+    it: { name: "Italian",    speechCode: "it-IT" },
+    nl: { name: "Dutch",      speechCode: "nl-NL" },
+    pl: { name: "Polish",     speechCode: "pl-PL" },
+    uk: { name: "Ukrainian",  speechCode: "uk-UA" },
+    sv: { name: "Swedish",    speechCode: "sv-SE" },
+    ta: { name: "Tamil",      speechCode: "ta-IN" },
+    bn: { name: "Bengali",    speechCode: "bn-IN" },
+    ms: { name: "Malay",      speechCode: "ms-MY" },
+    tl: { name: "Filipino",   speechCode: "fil-PH" },
+  };
+  let speakLang = "en";
+  let subtitleLang = "en";
 
   // NotebookLM conversation history (client-side only)
   let notebookConversation = [];
@@ -58,11 +89,14 @@ if ("serviceWorker" in navigator) {
 
 
   // ── View management ──────────────────────────────────────────
+  let summaryRoomCode = null;
+  let summaryChatHistory = [];
+  let summaryMeetingName = "";
+
   function showView(name) {
-    ["view-login", "view-lobby", "view-meeting"].forEach((id) => {
+    ["view-login", "view-lobby", "view-meeting", "view-summary"].forEach((id) => {
       const el = $(id);
-      el.classList.add("hidden");
-      el.style.display = "";
+      if (el) { el.classList.add("hidden"); el.style.display = ""; }
     });
     const target = $("view-" + name);
     if (target) {
@@ -117,8 +151,6 @@ if ("serviceWorker" in navigator) {
   function updateControlIcons() {
     const btn = $("btn-toggle-sidebar");
     if (btn) btn.classList.toggle("active", sidebarOpen && activeSidebarTab === "chat");
-    const docBtn = $("btn-open-doc");
-    if (docBtn) docBtn.classList.toggle("active", sidebarOpen && activeSidebarTab === "doc");
   }
 
   // ── Insight tabs ─────────────────────────────────────────────
@@ -203,10 +235,8 @@ if ("serviceWorker" in navigator) {
         video: { facingMode },
         audio: true,
       });
-      // Replace video track in local stream and all peer connections
       const newVideoTrack = newStream.getVideoTracks()[0];
       const oldVideoTrack = localStream.getVideoTracks()[0];
-      // Replace track in all peer connections BEFORE stopping old track
       peers.forEach((peer) => {
         try {
           if (typeof peer.replaceTrack === "function") {
@@ -220,23 +250,152 @@ if ("serviceWorker" in navigator) {
           }
         } catch (_) {}
       });
-      // Now stop old track and swap in local stream
       if (oldVideoTrack) oldVideoTrack.stop();
       localStream.removeTrack(oldVideoTrack);
       localStream.addTrack(newVideoTrack);
-      // Update local video element
       const v = $("local-video");
       if (v) v.srcObject = localStream;
-      // Mirror: front camera mirrored, back camera normal
       if (v) v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
-      // Stop the new audio track since we keep the old one
       newStream.getAudioTracks().forEach(t => t.stop());
-      // Re-apply cam muted state
       if (camMuted) newVideoTrack.enabled = false;
     } catch (e) {
       console.warn("Camera switch failed", e);
-      // Revert facing mode
       facingMode = facingMode === "user" ? "environment" : "user";
+    }
+  }
+
+  // ── Screen sharing ────────────────────────────────────────────
+  async function startScreenShare() {
+    if (screenSharing) return;
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch (e) {
+      // User cancelled or denied
+      return;
+    }
+    screenSharing = true;
+    const screenTrack = screenStream.getVideoTracks()[0];
+    const camTrack = localStream.getVideoTracks()[0];
+
+    // Replace camera track with screen track in all peer connections
+    peers.forEach((peer) => {
+      try {
+        if (typeof peer.replaceTrack === "function") {
+          peer.replaceTrack(camTrack, screenTrack, localStream);
+        } else {
+          const pc = peer._pc;
+          if (pc) {
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+            if (sender) sender.replaceTrack(screenTrack);
+          }
+        }
+      } catch (_) {}
+    });
+
+    // Show screen share in local video (no mirror)
+    const v = $("local-video");
+    if (v) {
+      v.srcObject = new MediaStream([screenTrack, ...localStream.getAudioTracks()]);
+      v.style.transform = "none";
+    }
+
+    // Update button state
+    const btn = $("btn-share-screen");
+    if (btn) btn.classList.add("active");
+
+    // When user stops sharing via browser UI
+    screenTrack.onended = () => stopScreenShare();
+  }
+
+  function stopScreenShare() {
+    if (!screenSharing) return;
+    screenSharing = false;
+
+    const camTrack = localStream.getVideoTracks()[0];
+
+    if (screenStream) {
+      const screenTrack = screenStream.getVideoTracks()[0];
+      // Replace screen track back with camera track
+      peers.forEach((peer) => {
+        try {
+          if (typeof peer.replaceTrack === "function") {
+            peer.replaceTrack(screenTrack, camTrack, localStream);
+          } else {
+            const pc = peer._pc;
+            if (pc) {
+              const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+              if (sender) sender.replaceTrack(camTrack);
+            }
+          }
+        } catch (_) {}
+      });
+      screenStream.getTracks().forEach(t => t.stop());
+      screenStream = null;
+    }
+
+    // Restore local video to camera
+    const v = $("local-video");
+    if (v) {
+      v.srcObject = localStream;
+      v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
+    }
+
+    // Re-apply cam muted state
+    if (camMuted && camTrack) camTrack.enabled = false;
+
+    const btn = $("btn-share-screen");
+    if (btn) btn.classList.remove("active");
+  }
+
+  function showScreenShareRequest(fromId, fromName) {
+    // Remove any existing request popup
+    const existing = $("screen-request-popup");
+    if (existing) existing.remove();
+
+    const popup = document.createElement("div");
+    popup.id = "screen-request-popup";
+    popup.className = "screen-request-popup";
+    popup.innerHTML =
+      '<div class="screen-request-content">' +
+        '<p><strong>' + escapeHtml(fromName) + '</strong> wants to share their screen.</p>' +
+        '<div class="screen-request-actions">' +
+          '<button type="button" class="small" id="btn-screen-accept">Allow</button>' +
+          '<button type="button" class="small secondary" id="btn-screen-deny">Deny</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(popup);
+    renderIcons();
+
+    $("btn-screen-accept").addEventListener("click", () => {
+      if (socket && socket.connected) socket.emit("screen:respond", { targetId: fromId, approved: true });
+      popup.remove();
+    });
+    $("btn-screen-deny").addEventListener("click", () => {
+      if (socket && socket.connected) socket.emit("screen:respond", { targetId: fromId, approved: false });
+      popup.remove();
+    });
+
+    // Auto-deny after 30 seconds
+    setTimeout(() => {
+      if (popup.parentNode) {
+        if (socket && socket.connected) socket.emit("screen:respond", { targetId: fromId, approved: false });
+        popup.remove();
+      }
+    }, 30000);
+  }
+
+  function requestScreenShare() {
+    if (screenSharing) {
+      stopScreenShare();
+      return;
+    }
+    if (!socket || !socket.connected) return;
+    // Host shares directly; non-host must ask permission
+    if (meetingState.isHost) {
+      startScreenShare();
+    } else {
+      meetingStatus("Requesting screen share permission...");
+      socket.emit("screen:request");
     }
   }
 
@@ -270,15 +429,8 @@ if ("serviceWorker" in navigator) {
     const subtitleToggle = $("toggle-subtitles");
     if (subtitleToggle) subtitleToggle.checked = subtitlesEnabled;
 
-    if (subtitlesEnabled) {
-      if (!sttActive) startStt();
-      return;
-    }
-
-    // Hide all subtitle overlays when disabled
-    document.querySelectorAll(".remote-voice-subtitle").forEach((el) => { el.textContent = ""; });
-    const localVSub = $("local-voice-subtitle");
-    if (localVSub) localVSub.textContent = "";
+    const box = $("subtitle-box");
+    if (!subtitlesEnabled && box) box.innerHTML = "";
   }
 
   function renderLocalSignSubtitle() {
@@ -429,14 +581,12 @@ if ("serviceWorker" in navigator) {
 
   function syncDocHostUi() {
     const row = $("doc-upload-row");
-    // Every member can upload their own private document
     if (row) row.classList.remove("hidden");
   }
 
   function emitDocLanguage() {
-    const sel = $("doc-lang-select");
-    if (!socket || !socket.connected || !sel) return;
-    socket.emit("doc:setLanguage", { preferredLanguage: sel.value });
+    if (!socket || !socket.connected) return;
+    socket.emit("doc:setLanguage", { preferredLanguage: "en" });
   }
 
   function applyDocPayload(d) {
@@ -472,7 +622,6 @@ if ("serviceWorker" in navigator) {
       if (msg.role === "user") {
         bubble.textContent = msg.text;
       } else {
-        // AI response — render with basic markdown-like formatting
         bubble.innerHTML = formatAiResponse(msg.text);
       }
       container.appendChild(bubble);
@@ -481,18 +630,12 @@ if ("serviceWorker" in navigator) {
   }
 
   function formatAiResponse(text) {
-    // Basic markdown: bold, bullet points, headers
     let html = escapeHtml(text);
-    // Bold **text**
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    // Headers ## text
     html = html.replace(/^### (.+)$/gm, '<div class="notebook-h3">$1</div>');
     html = html.replace(/^## (.+)$/gm, '<div class="notebook-h2">$1</div>');
-    // Bullet points
     html = html.replace(/^[-*] (.+)$/gm, '<div class="notebook-bullet">$1</div>');
-    // Numbered lists
     html = html.replace(/^\d+\. (.+)$/gm, '<div class="notebook-bullet notebook-numbered">$1</div>');
-    // Line breaks
     html = html.replace(/\n/g, '<br>');
     return html;
   }
@@ -503,113 +646,81 @@ if ("serviceWorker" in navigator) {
     return d.innerHTML;
   }
 
-  // ── Subtitle translation helper ────────────────────────────
-  const _translateCache = new Map();
-  async function translateForSubtitle(text, sourceLang) {
-    if (!subtitleLang || !text.trim()) return text;
-    // Map Whisper lang codes (e.g. "en") to our target
-    const src = (sourceLang || "auto").split("-")[0] || "auto";
-    if (src === subtitleLang) return text;
-    const key = src + ":" + subtitleLang + ":" + text;
-    if (_translateCache.has(key)) return _translateCache.get(key);
-    try {
-      const res = await fetch("/api/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, source: src, target: subtitleLang }),
-      });
-      if (!res.ok) return text;
-      const data = await res.json();
-      const result = data.translated || text;
-      _translateCache.set(key, result);
-      // Keep cache small
-      if (_translateCache.size > 200) {
-        const first = _translateCache.keys().next().value;
-        _translateCache.delete(first);
-      }
-      return result;
-    } catch {
-      return text;
-    }
-  }
+  // ── Voice-to-Text (Browser SpeechRecognition) ───────────────
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  // ── Voice-to-Text (Server-side Whisper) ─────────────────────
-  const STT_CHUNK_MS = 4000; // send audio every 4 seconds
-
-  function initStt() {
-    // Nothing to initialize — MediaRecorder is created on start
-  }
+  function initStt() {}
 
   function startStt() {
     if (sttActive) return;
-    if (!localStream) { meetingStatus("No microphone stream available."); return; }
-
-    // Create a new stream with only audio tracks
-    const audioTracks = localStream.getAudioTracks();
-    if (!audioTracks.length) { meetingStatus("No audio track found."); return; }
-    const audioStream = new MediaStream(audioTracks);
-
-    // Pick best supported format (Safari uses mp4, Chrome uses webm)
-    let mimeType = "";
-    for (const mt of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]) {
-      if (MediaRecorder.isTypeSupported(mt)) { mimeType = mt; break; }
+    if (!SpeechRecognitionCtor) {
+      meetingStatus("Speech recognition not supported in this browser.");
+      return;
     }
 
-    const recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
+    sttActive = true;
+    const recognition = new SpeechRecognitionCtor();
+    sttRecognition = recognition;
 
-    recorder.ondataavailable = (e) => {
-      if (!e.data || e.data.size === 0) return;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = (LANGUAGES[speakLang] && LANGUAGES[speakLang].speechCode) || "en-US";
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
       if (!socket || !socket.connected) return;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0].transcript;
+        const isFinal = result.isFinal;
+        socket.emit("caption:voice", { text, isFinal, lang: recognition.lang });
 
-      const langSel = $("stt-lang-select");
-      const lang = langSel ? langSel.value : "";
-      // Convert lang code like "en-US" -> "en" for Whisper
-      const whisperLang = lang.split("-")[0] || "";
-
-      // Determine file extension from mime type for Whisper
-      const ext = mimeType.includes("mp4") ? ".mp4" : mimeType.includes("ogg") ? ".ogg" : ".webm";
-      e.data.arrayBuffer().then((buf) => {
-        socket.emit("audio:chunk", {
-          audio: buf,
-          language: whisperLang,
-          ext,
-        });
-      });
+        // Show own captions locally
+        if (isFinal && text.trim()) {
+          const box = $("subtitle-box");
+          if (box && subtitlesEnabled) {
+            const line = document.createElement("div");
+            line.textContent = "You: " + text.trim();
+            box.appendChild(line);
+            box.scrollTop = box.scrollHeight;
+            while (box.children.length > 20) box.removeChild(box.firstChild);
+          }
+        }
+      }
     };
 
-    recorder.onerror = () => { stopStt(); };
+    recognition.onerror = (e) => {
+      // "no-speech" and "aborted" are normal — just restart
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      console.warn("[stt] error:", e.error);
+      if (e.error === "not-allowed") {
+        meetingStatus("Microphone access denied for speech recognition.");
+        stopStt();
+      }
+    };
 
-    recorder.start(STT_CHUNK_MS);
-    sttMediaRecorder = recorder;
-    sttActive = true;
+    recognition.onend = () => {
+      // Auto-restart if still active (browser stops after silence)
+      if (sttActive) {
+        try { recognition.start(); } catch (_) {}
+      }
+    };
 
-    const bar = $("stt-live-bar");
-    if (bar) bar.classList.remove("hidden");
-    const btn = $("btn-stt");
-    if (btn) btn.classList.add("active");
-    const liveText = $("stt-live-text");
-    if (liveText) liveText.textContent = "Listening (Whisper)...";
+    try {
+      recognition.start();
+    } catch (err) {
+      meetingStatus("Could not start speech recognition.");
+      sttActive = false;
+      sttRecognition = null;
+    }
   }
 
   function stopStt() {
     sttActive = false;
-    if (sttMediaRecorder && sttMediaRecorder.state !== "inactive") {
-      try { sttMediaRecorder.stop(); } catch (_) {}
+    if (sttRecognition) {
+      try { sttRecognition.stop(); } catch (_) {}
     }
-    sttMediaRecorder = null;
-
-    const bar = $("stt-live-bar");
-    if (bar) bar.classList.add("hidden");
-    const btn = $("btn-stt");
-    if (btn) btn.classList.remove("active");
-  }
-
-  function toggleStt() {
-    if (sttActive) {
-      stopStt();
-    } else {
-      startStt();
-    }
+    sttRecognition = null;
   }
 
   // ── Socket handlers ──────────────────────────────────────────
@@ -642,6 +753,20 @@ if ("serviceWorker" in navigator) {
     socket.on("peer:joined", ({ peerId, name }) => { addPeer(peerId, name || "Guest"); });
     socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); });
 
+    // Screen share permission — host receives requests
+    socket.on("screen:request", ({ fromId, fromName }) => {
+      showScreenShareRequest(fromId, fromName);
+    });
+    // Non-host receives approval/denial
+    socket.on("screen:approved", () => {
+      meetingStatus("");
+      startScreenShare();
+    });
+    socket.on("screen:denied", () => {
+      meetingStatus("Screen share request denied by host.");
+      setTimeout(() => meetingStatus(""), 4000);
+    });
+
     socket.on("chat:message", (data) => {
       const log = $("chat-log");
       const line = document.createElement("div");
@@ -667,7 +792,7 @@ if ("serviceWorker" in navigator) {
           line.className = "sign-line";
           const t = new Date(data.at).toLocaleTimeString();
           let body = `${data.from}: ${data.text}`;
-          if (data.translatedText) body += ` → ${data.translatedText}`;
+          if (data.translatedText) body += ` \u2192 ${data.translatedText}`;
           if (data.kind && data.kind !== "gesture") body += ` (${data.kind})`;
           line.textContent = `[${t}] ${body}`;
           signLog.appendChild(line);
@@ -689,73 +814,22 @@ if ("serviceWorker" in navigator) {
       flushTtsQueue();
     });
 
-    /* ── Real-time voice captions from other users ── */
+    /* ── Real-time voice captions — show translated text from others ── */
     socket.on("caption:voice", (data) => {
-      const peerId = data.socketId;
-      if (!peerId) return;
+      if (!data.socketId || !subtitlesEnabled) return;
+      if (data.socketId === socket.id) return;
 
-      // If this is our own transcription, show on local video + chat input
-      if (peerId === socket.id) {
-        const localSub = $("local-voice-subtitle");
-        if (localSub && subtitlesEnabled) {
-          localSub.textContent = data.text || "";
-          clearTimeout(localSub._clearTimer);
-          if (data.isFinal && data.text) {
-            // Translate local subtitle if language is set
-            if (subtitleLang) {
-              const srcLang = data.lang || "auto";
-              translateForSubtitle(data.text, srcLang).then((translated) => {
-                if (translated !== data.text) localSub.textContent = translated;
-                clearTimeout(localSub._clearTimer);
-                localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 5000);
-              });
-            } else {
-              localSub._clearTimer = setTimeout(() => { localSub.textContent = ""; }, 4000);
-            }
-          }
-        } else if (localSub && !subtitlesEnabled) {
-          localSub.textContent = "";
-        }
-        // Append final transcription to chat input
-        if (data.isFinal && data.text) {
-          const input = $("chat-input");
-          if (input) input.value += (input.value ? " " : "") + data.text.trim();
-        }
-        return;
-      }
+      const box = $("subtitle-box");
+      if (!box || !data.isFinal) return;
+      const displayText = data.translatedText || data.text || "";
+      if (!displayText.trim()) return;
 
-      // If subtitles are off, don't show remote captions
-      if (!subtitlesEnabled) return;
-
-      const wrap = document.getElementById("remote-" + peerId);
-      if (!wrap) return;
-      let sub = wrap.querySelector(".remote-voice-subtitle");
-      if (!sub) {
-        sub = document.createElement("div");
-        sub.className = "video-subtitle remote-voice-subtitle";
-        sub.setAttribute("aria-live", "polite");
-        wrap.appendChild(sub);
-      }
-
-      // Show original text immediately
-      sub.textContent = data.text || "";
-      clearTimeout(sub._clearTimer);
-
-      // If user selected a different language, translate async
-      if (subtitleLang && data.text && data.isFinal) {
-        const srcLang = data.lang || "auto";
-        translateForSubtitle(data.text, srcLang).then((translated) => {
-          if (translated !== data.text) {
-            sub.textContent = translated;
-          }
-          clearTimeout(sub._clearTimer);
-          sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 5000);
-        });
-      } else if (data.isFinal && data.text) {
-        sub._clearTimer = setTimeout(() => { sub.textContent = ""; }, 4000);
-      } else if (!data.text) {
-        sub.textContent = "";
-      }
+      const name = data.from || "Someone";
+      const line = document.createElement("div");
+      line.textContent = name + ": " + displayText.trim();
+      box.appendChild(line);
+      box.scrollTop = box.scrollHeight;
+      while (box.children.length > 20) box.removeChild(box.firstChild);
     });
 
     socket.on("doc:processing", (d) => {
@@ -768,7 +842,7 @@ if ("serviceWorker" in navigator) {
 
     socket.on("doc:ready", (d) => {
       const st = $("doc-status");
-      if (st) st.textContent = (d.fileName || "") + " · source: " + (d.sourceLanguage || "?");
+      if (st) st.textContent = (d.fileName || "") + " \u00b7 source: " + (d.sourceLanguage || "?");
     });
 
     socket.on("doc:payload", (d) => { applyDocPayload(d); });
@@ -783,16 +857,20 @@ if ("serviceWorker" in navigator) {
 
     socket.on("doc:warn",   (d) => { if (d && d.message) meetingStatus(d.message); });
 
-    socket.on("room:ended", async ({ reason }) => {
+    socket.on("room:ended", async ({ reason, summaryCode }) => {
       const labels = {
         host_ended: "Meeting ended by host.",
-        host_left:  "Host left — meeting closed.",
-        empty:      "Everyone left — meeting closed.",
+        host_left:  "Host left \u2014 meeting closed.",
+        empty:      "Everyone left \u2014 meeting closed.",
       };
       meetingStatus(labels[reason] || "Meeting ended.");
       await cleanupMeeting();
-      showView("lobby");
-      refreshLobbyUser();
+      if (summaryCode) {
+        promptMeetingName(summaryCode);
+      } else {
+        showView("lobby");
+        refreshLobbyUser();
+      }
     });
   }
 
@@ -851,6 +929,8 @@ if ("serviceWorker" in navigator) {
   function updateMeetingMeta(ack) {
     meetingState = { code: ack.code, joinUrl: ack.joinUrl || "", isHost: !!ack.isHost };
     $('meeting-code-label').textContent = ack.code;
+    const shareCode = $("share-code-display");
+    if (shareCode) shareCode.textContent = ack.code;
     $("qr-img").src = "/api/qr/" + encodeURIComponent(ack.code);
     $("btn-end").classList.toggle("hidden", !ack.isHost);
     meetingStatus("");
@@ -864,16 +944,15 @@ if ("serviceWorker" in navigator) {
     localSpellDraft = "";
     renderLocalSignSubtitle();
     document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
-    document.querySelectorAll(".remote-voice-subtitle").forEach(n => { n.textContent = ""; });
-    const localVoiceSub = $("local-voice-subtitle");
-    if (localVoiceSub) localVoiceSub.textContent = "";
+    const subBox = $("subtitle-box");
+    if (subBox) subBox.innerHTML = "";
     resetDocPanel();
     syncDocHostUi();
     const dinput = $("doc-file-input");
     if (dinput) dinput.value = "";
     if (socket && socket.connected) emitDocLanguage();
-    setMicMuted(false);
-    setCamMuted(false);
+    setMicMuted(true);
+    setCamMuted(true);
     setSubtitlesEnabled(false);
   }
 
@@ -888,6 +967,7 @@ if ("serviceWorker" in navigator) {
   }
 
   async function cleanupMeeting() {
+    stopScreenShare();
     stopStt();
     await stopHandSignCaptions();
     resetDocPanel();
@@ -897,8 +977,8 @@ if ("serviceWorker" in navigator) {
     localSpellDraft = "";
     const locSub = $("local-sign-subtitle");
     if (locSub) locSub.textContent = "";
-    const locVoiceSub = $("local-voice-subtitle");
-    if (locVoiceSub) locVoiceSub.textContent = "";
+    const subBox2 = $("subtitle-box");
+    if (subBox2) subBox2.innerHTML = "";
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
     $("remote-videos").innerHTML = "";
@@ -910,6 +990,8 @@ if ("serviceWorker" in navigator) {
     busy = false;
     meetingStatus("");
     const qr = $("qr-img"); if (qr) qr.removeAttribute("src");
+    const shareM = $("share-modal"); if (shareM) shareM.classList.add("hidden");
+    const scrReq = $("screen-request-popup"); if (scrReq) scrReq.remove();
     closeSidebar();
     const hsBar = $("hand-sign-bar"); if(hsBar) hsBar.style.display = "none";
     const sp = $("settings-popup"); if (sp) sp.classList.add("hidden");
@@ -924,6 +1006,7 @@ if ("serviceWorker" in navigator) {
 
   async function startHost() {
     if (busy) return;
+    readLangSelects("host");
     clearLobbyError();
     busy = true;
     try {
@@ -933,7 +1016,6 @@ if ("serviceWorker" in navigator) {
       $("lobby-error").textContent = "Camera/microphone access is required.";
       return;
     }
-    // Check auth
     const token = getToken();
     if (!token) { busy = false; showView("login"); return; }
 
@@ -943,7 +1025,7 @@ if ("serviceWorker" in navigator) {
     socket.on("connect_error", onConnectError);
     registerSocketHandlers();
     const runCreate = () => {
-      socket.emit("room:create", async (ack) => {
+      socket.emit("room:create", { speakLang, subtitleLang }, async (ack) => {
         if (!ack || ack.error) {
           meetingStatus("Could not create room: " + (ack && ack.error ? ack.error : "unknown"));
           await cleanupMeeting(); showView("lobby"); return;
@@ -951,6 +1033,7 @@ if ("serviceWorker" in navigator) {
         updateMeetingMeta(ack);
         (ack.peers || []).forEach(p => addPeer(p.id, p.name));
         busy = false;
+        startStt();
       });
     };
     if (socket.connected) runCreate(); else socket.once("connect", runCreate);
@@ -958,6 +1041,7 @@ if ("serviceWorker" in navigator) {
 
   async function startJoin(rawCode) {
     if (busy) return;
+    readLangSelects("join");
     const code = String(rawCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (code.length < 4) { $("lobby-error").textContent = "Enter a valid meeting code."; return; }
     clearLobbyError();
@@ -978,7 +1062,7 @@ if ("serviceWorker" in navigator) {
     socket.on("connect_error", onConnectError);
     registerSocketHandlers();
     const runJoin = () => {
-      socket.emit("room:join", { code }, async (ack) => {
+      socket.emit("room:join", { code, speakLang, subtitleLang }, async (ack) => {
         if (!ack || ack.error) {
           meetingStatus(ack && ack.error === "not_found"
             ? "Meeting not found or already ended."
@@ -988,6 +1072,7 @@ if ("serviceWorker" in navigator) {
         updateMeetingMeta(ack);
         (ack.peers || []).forEach(p => addPeer(p.id, p.name));
         busy = false;
+        startStt();
         try { const u = new URL(window.location.href); u.searchParams.delete("join"); window.history.replaceState({}, "", u.toString()); } catch (_) {}
       });
     };
@@ -995,10 +1080,22 @@ if ("serviceWorker" in navigator) {
   }
 
   async function leaveMeeting() {
-    if (socket && socket.connected) socket.emit("room:leave");
-    await cleanupMeeting();
-    showView("lobby");
-    refreshLobbyUser();
+    const code = meetingState.code;
+    if (socket && socket.connected) {
+      socket.emit("room:leave", async (ack) => {
+        await cleanupMeeting();
+        if (ack && ack.summaryCode) {
+          promptMeetingName(ack.summaryCode);
+        } else {
+          showView("lobby");
+          refreshLobbyUser();
+        }
+      });
+    } else {
+      await cleanupMeeting();
+      showView("lobby");
+      refreshLobbyUser();
+    }
   }
 
   function endMeetingForAll() {
@@ -1013,7 +1110,7 @@ if ("serviceWorker" in navigator) {
     const want = el.checked;
     if (want) {
       if (!window.HandSignCaptions) { meetingStatus("Hand-sign script not loaded."); el.checked = false; return; }
-      if (!window.HandSignAlphabetKit) { meetingStatus("Missing vendor/handsigns-alphabet.js — run: npm run build:handsigns"); el.checked = false; return; }
+      if (!window.HandSignAlphabetKit) { meetingStatus("Missing vendor/handsigns-alphabet.js \u2014 run: npm run build:handsigns"); el.checked = false; return; }
       try {
         meetingStatus("Loading hand models...");
         await window.HandSignCaptions.start(
@@ -1064,7 +1161,7 @@ if ("serviceWorker" in navigator) {
       });
     } catch (err) {
       $("login-error").textContent =
-        "Network error — is the server running? (npm start) " + String(err && err.message ? err.message : err);
+        "Network error \u2014 is the server running? (npm start) " + String(err && err.message ? err.message : err);
       return;
     }
     const raw = await res.text();
@@ -1073,7 +1170,7 @@ if ("serviceWorker" in navigator) {
     if (!res.ok) {
       $("login-error").textContent =
         data.error || (res.status === 404 || res.status === 405
-          ? "API not found — run the backend: npm start"
+          ? "API not found \u2014 run the backend: npm start"
           : `Request failed (${res.status}).`);
       return;
     }
@@ -1100,30 +1197,324 @@ if ("serviceWorker" in navigator) {
     showView("login");
   }
 
+  // ── Meeting Name Prompt ─────────────────────────────────────
+  function promptMeetingName(summaryCode) {
+    const modal = $("meeting-name-modal");
+    const input = $("meeting-name-input");
+    if (!modal) { showMeetingSummary(summaryCode); return; }
+    if (input) input.value = "";
+    modal.classList.remove("hidden");
+    renderIcons();
+    if (input) input.focus();
+
+    function finish(name) {
+      modal.classList.add("hidden");
+      summaryMeetingName = (name || "").trim();
+      // Save name to server if provided
+      if (summaryMeetingName) {
+        fetch("/api/meeting-summary/" + encodeURIComponent(summaryCode) + "/name", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: summaryMeetingName }),
+        }).catch(() => {});
+      }
+      showMeetingSummary(summaryCode);
+    }
+
+    const form = $("form-meeting-name");
+    const skipBtn = $("btn-skip-name");
+
+    function onSubmit(ev) {
+      ev.preventDefault();
+      cleanup();
+      finish(input ? input.value : "");
+    }
+    function onSkip() {
+      cleanup();
+      finish("");
+    }
+    function cleanup() {
+      if (form) form.removeEventListener("submit", onSubmit);
+      if (skipBtn) skipBtn.removeEventListener("click", onSkip);
+    }
+
+    if (form) form.addEventListener("submit", onSubmit);
+    if (skipBtn) skipBtn.addEventListener("click", onSkip);
+  }
+
+  // ── Meeting Summary ──────────────────────────────────────────
+  async function showMeetingSummary(code) {
+    summaryRoomCode = code;
+    summaryChatHistory = [];
+    showView("summary");
+    renderIcons();
+
+    const loading = $("summary-loading");
+    const cards = $("summary-cards");
+    if (loading) loading.classList.remove("hidden");
+    if (cards) cards.classList.add("hidden");
+
+    // Reset chat log
+    const chatLog = $("summary-chat-log");
+    if (chatLog) {
+      chatLog.innerHTML = '<div class="notebook-empty">' +
+        '<i data-lucide="message-circle-question" style="width:24px;height:24px;stroke:var(--text-3);stroke-width:1.5;"></i>' +
+        '<p>Ask any question about this meeting. The AI will use the full transcript to answer.</p></div>';
+    }
+
+    // Poll for summary (generation may still be in progress)
+    let data = null;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch("/api/meeting-summary/" + encodeURIComponent(code));
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    if (loading) loading.classList.add("hidden");
+
+    if (!data) {
+      if (cards) {
+        cards.classList.remove("hidden");
+        const txt = $("summary-text");
+        if (txt) txt.textContent = "Could not generate meeting summary. The meeting may have been too short.";
+      }
+      renderIcons();
+      return;
+    }
+
+    // Populate summary cards
+    if (cards) cards.classList.remove("hidden");
+
+    // Show meeting name in title if provided
+    const titleEl = $("summary-title");
+    const displayName = summaryMeetingName || (data.meetingName || "");
+    if (titleEl) titleEl.textContent = displayName || "Meeting Summary";
+
+    const meta = $("summary-meta");
+    if (meta) meta.textContent = new Date(data.createdAt).toLocaleString() + " \u00b7 Room: " + code;
+
+    const txt = $("summary-text");
+    if (txt) txt.textContent = data.summary || "No summary available.";
+
+    const dur = $("summary-duration");
+    if (dur) dur.textContent = (data.durationMinutes || 0) + " min";
+
+    const att = $("summary-attendees");
+    if (att) {
+      const count = (data.attendees || []).length;
+      att.textContent = count + " participant" + (count !== 1 ? "s" : "");
+    }
+
+    // Store attendee details for popup
+    populateAttendeePopup(data.attendeeDetails || [], data.attendees || []);
+
+    // Topics
+    const topicsEl = $("summary-topics");
+    const topicsCard = $("summary-topics-card");
+    if (topicsEl && data.topics && data.topics.length > 0) {
+      topicsEl.innerHTML = "";
+      data.topics.forEach((t) => {
+        const div = document.createElement("div");
+        div.className = "summary-topic-item";
+        div.innerHTML = "<strong>" + escapeHtml(t.title) + "</strong><p>" + escapeHtml(t.details) + "</p>";
+        topicsEl.appendChild(div);
+      });
+      if (topicsCard) topicsCard.classList.remove("hidden");
+    } else if (topicsCard) {
+      topicsCard.classList.add("hidden");
+    }
+
+    // Assignments
+    const assignEl = $("summary-assignments");
+    const assignCard = $("summary-assignments-card");
+    if (assignEl && data.assignments && data.assignments.length > 0) {
+      assignEl.innerHTML = "";
+      data.assignments.forEach((a) => {
+        const div = document.createElement("div");
+        div.className = "summary-assignment-item";
+        div.innerHTML = '<span class="assignment-badge">' + escapeHtml(a.assignee) + "</span> " + escapeHtml(a.task);
+        assignEl.appendChild(div);
+      });
+      if (assignCard) assignCard.classList.remove("hidden");
+    } else if (assignCard) {
+      assignCard.classList.add("hidden");
+    }
+
+    // Key Decisions
+    const decEl = $("summary-decisions");
+    const decCard = $("summary-decisions-card");
+    if (decEl && data.keyDecisions && data.keyDecisions.length > 0) {
+      decEl.innerHTML = "";
+      data.keyDecisions.forEach((d) => {
+        const div = document.createElement("div");
+        div.className = "summary-decision-item";
+        div.textContent = d;
+        decEl.appendChild(div);
+      });
+      if (decCard) decCard.classList.remove("hidden");
+    } else if (decCard) {
+      decCard.classList.add("hidden");
+    }
+
+    renderIcons();
+  }
+
+  async function askSummaryQuestion(question) {
+    if (!summaryRoomCode || !question.trim()) return;
+
+    const chatLog = $("summary-chat-log");
+    if (!chatLog) return;
+
+    // Clear empty state
+    const empty = chatLog.querySelector(".notebook-empty");
+    if (empty) empty.remove();
+
+    // Add user message
+    const userBubble = document.createElement("div");
+    userBubble.className = "notebook-msg notebook-msg--user";
+    userBubble.textContent = question;
+    chatLog.appendChild(userBubble);
+
+    // Add thinking bubble
+    const aiBubble = document.createElement("div");
+    aiBubble.className = "notebook-msg notebook-msg--ai";
+    aiBubble.textContent = "Thinking...";
+    chatLog.appendChild(aiBubble);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    try {
+      const res = await fetch("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      aiBubble.innerHTML = formatAiResponse(data.answer || "No answer.");
+    } catch (err) {
+      aiBubble.textContent = "Error: " + (err.message || err);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // ── Attendee popup ─────────────────────────────────────────
+  function populateAttendeePopup(details, names) {
+    const list = $("attendee-list");
+    if (!list) return;
+    list.innerHTML = "";
+
+    const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+    const fmtDur = (join, leave) => {
+      if (!join) return "";
+      const ms = (leave || Date.now()) - join;
+      const mins = Math.round(ms / 60000);
+      return mins < 1 ? "<1 min" : mins + " min";
+    };
+
+    if (details && details.length > 0) {
+      details.forEach((a) => {
+        const row = document.createElement("div");
+        row.className = "attendee-row";
+        row.innerHTML =
+          '<div class="attendee-avatar">' + escapeHtml(a.name.charAt(0).toUpperCase()) + '</div>' +
+          '<div class="attendee-info">' +
+            '<div class="attendee-name">' + escapeHtml(a.name) + '</div>' +
+            '<div class="attendee-times">' +
+              '<span><span class="attendee-time-label">Joined </span>' + fmtTime(a.joinedAt) + '</span>' +
+              '<span><span class="attendee-time-label">Left </span>' + fmtTime(a.leftAt) + '</span>' +
+              '<span><span class="attendee-time-label">Duration </span>' + fmtDur(a.joinedAt, a.leftAt) + '</span>' +
+            '</div>' +
+          '</div>';
+        list.appendChild(row);
+      });
+    } else {
+      // Fallback: just show names without times
+      names.forEach((name) => {
+        const row = document.createElement("div");
+        row.className = "attendee-row";
+        row.innerHTML =
+          '<div class="attendee-avatar">' + escapeHtml(name.charAt(0).toUpperCase()) + '</div>' +
+          '<div class="attendee-info"><div class="attendee-name">' + escapeHtml(name) + '</div></div>';
+        list.appendChild(row);
+      });
+    }
+  }
+
+  // ── Language selector helpers ────────────────────────────────
+  function populateLangSelects() {
+    const ids = ["host-speak-lang", "host-subtitle-lang", "join-speak-lang", "join-subtitle-lang"];
+    ids.forEach((id) => {
+      const sel = $(id);
+      if (!sel || sel.children.length) return;
+      Object.entries(LANGUAGES).forEach(([code, { name }]) => {
+        const opt = document.createElement("option");
+        opt.value = code;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      sel.value = "en";
+    });
+  }
+
+  function readLangSelects(prefix) {
+    const sp = $(prefix + "-speak-lang");
+    const sb = $(prefix + "-subtitle-lang");
+    if (sp) speakLang = sp.value || "en";
+    if (sb) subtitleLang = sb.value || "en";
+  }
+
   // ── Wire up all event listeners ──────────────────────────────
   function wireEvents() {
+    const on = (id, event, handler) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener(event, handler);
+    };
+
     // Login
-    $("form-login").addEventListener("submit", submitLogin);
+    on("form-login", "submit", submitLogin);
 
     // Lobby
-    $("btn-host").addEventListener("click", () => startHost());
-    $("form-join").addEventListener("submit", (ev) => { ev.preventDefault(); startJoin($("join-code").value); });
-    $("btn-logout").addEventListener("click", logout);
+    on("btn-host", "click", () => startHost());
+    on("form-join", "submit", (ev) => { ev.preventDefault(); startJoin($("join-code").value); });
+    on("btn-logout", "click", logout);
 
     // Meeting controls
-    $("btn-copy-link").addEventListener("click", async () => {
+    on("btn-copy-link", "click", async () => {
       const url = meetingState.joinUrl;
       if (!url) return;
       try { await navigator.clipboard.writeText(url); meetingStatus("Invite link copied!"); setTimeout(() => meetingStatus(""), 2500); }
       catch { meetingStatus("Copy manually: " + url); }
     });
 
-    $("btn-leave").addEventListener("click", leaveMeeting);
-    $("btn-end").addEventListener("click", endMeetingForAll);
+    on("btn-leave", "click", leaveMeeting);
+    on("btn-end", "click", endMeetingForAll);
 
-    $("btn-toggle-mic").addEventListener("click", () => setMicMuted(!micMuted));
-    $("btn-toggle-cam").addEventListener("click", () => setCamMuted(!camMuted));
-    $("btn-switch-cam").addEventListener("click", () => switchCamera());
+    // Share modal
+    on("btn-share-meeting", "click", () => {
+      const modal = $("share-modal");
+      if (modal) modal.classList.remove("hidden");
+    });
+    on("btn-share-close", "click", () => {
+      const modal = $("share-modal");
+      if (modal) modal.classList.add("hidden");
+    });
+    const shareModal = $("share-modal");
+    if (shareModal) {
+      shareModal.addEventListener("click", (e) => {
+        if (e.target === shareModal) shareModal.classList.add("hidden");
+      });
+    }
+
+    on("btn-toggle-mic", "click", () => setMicMuted(!micMuted));
+    on("btn-toggle-cam", "click", () => setCamMuted(!camMuted));
+    on("btn-switch-cam", "click", () => switchCamera());
+    on("btn-share-screen", "click", () => requestScreenShare());
 
     // Mobile sidebar close & leave buttons
     const sidebarCloseBtn = $("btn-sidebar-close");
@@ -1146,18 +1537,13 @@ if ("serviceWorker" in navigator) {
       sidebarLeaveBtn.addEventListener("touchend", onSidebarLeave, { passive: false });
     }
 
-    $("btn-toggle-sidebar").addEventListener("click", () => {
+    on("btn-toggle-sidebar", "click", () => {
       toggleSidebar("chat");
       updateControlIcons();
     });
 
-    $("btn-open-doc").addEventListener("click", () => {
-      if (sidebarOpen && activeSidebarTab === "doc") { closeSidebar(); }
-      else { openSidebar("doc"); }
-      updateControlIcons();
-    });
 
-    $("btn-toggle-handsign-bar").addEventListener("click", () => {
+    on("btn-toggle-handsign-bar", "click", () => {
       const bar = $("hand-sign-bar");
       if (!bar) return;
       const isHidden = bar.style.display === "none" || bar.style.display === "";
@@ -1175,7 +1561,6 @@ if ("serviceWorker" in navigator) {
         settingsPopup.classList.toggle("hidden");
         settingsBtn.classList.toggle("active", !settingsPopup.classList.contains("hidden"));
       });
-      // Close popup when clicking outside
       document.addEventListener("click", (e) => {
         if (!settingsPopup.contains(e.target) && e.target !== settingsBtn) {
           settingsPopup.classList.add("hidden");
@@ -1184,32 +1569,25 @@ if ("serviceWorker" in navigator) {
       });
     }
 
-    // Subtitle toggle — also auto-start/stop STT
+    // Subtitle toggle
     const subtitleToggle = $("toggle-subtitles");
     if (subtitleToggle) {
       subtitleToggle.addEventListener("change", () => setSubtitlesEnabled(subtitleToggle.checked));
 
-      // Mobile Safari/webview resilience: allow tapping the full row text/icon area.
       const subtitleRow = subtitleToggle.closest(".settings-row");
       if (subtitleRow) {
         subtitleRow.addEventListener("click", (ev) => {
-          if (ev.target === subtitleToggle) return;
+          const toggleSwitch = subtitleToggle.closest("label.toggle-switch");
+          if (ev.target === subtitleToggle || (toggleSwitch && toggleSwitch.contains(ev.target))) return;
           subtitleToggle.checked = !subtitleToggle.checked;
           setSubtitlesEnabled(subtitleToggle.checked);
         });
       }
     }
 
-    // Subtitle language
-    const subtitleLangSel = $("subtitle-lang-select");
-    if (subtitleLangSel) {
-      subtitleLangSel.addEventListener("change", () => {
-        subtitleLang = subtitleLangSel.value;
-      });
-    }
 
     // Chat form
-    $("form-chat").addEventListener("submit", (ev) => {
+    on("form-chat", "submit", (ev) => {
       ev.preventDefault();
       const input = $("chat-input");
       const text = input.value.trim();
@@ -1218,18 +1596,7 @@ if ("serviceWorker" in navigator) {
       input.value = "";
     });
 
-    // Voice-to-text button
-    const sttBtn = $("btn-stt");
-    if (sttBtn) sttBtn.addEventListener("click", toggleStt);
 
-    // STT language change
-    const sttLang = $("stt-lang-select");
-    if (sttLang) sttLang.addEventListener("change", () => {
-      if (sttActive) {
-        stopStt();
-        startStt();
-      }
-    });
 
     // Hand-sign checkboxes
     const handSignCb = $("hand-sign-enable");
@@ -1255,7 +1622,7 @@ if ("serviceWorker" in navigator) {
         const before = window.HandSignCaptions.getSpellBuffer
           ? String(window.HandSignCaptions.getSpellBuffer() || "").trim() : "";
         window.HandSignCaptions.commitSpell();
-        if (!before) { meetingStatus("Nothing to send yet — hold each letter steady until it appears."); setTimeout(() => meetingStatus(""), 5000); }
+        if (!before) { meetingStatus("Nothing to send yet \u2014 hold each letter steady until it appears."); setTimeout(() => meetingStatus(""), 5000); }
         else meetingStatus("");
       });
     }
@@ -1274,6 +1641,7 @@ if ("serviceWorker" in navigator) {
     const docLang = $("doc-lang-select");
     if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
 
+
     // Doc file upload
     const docFile = $("doc-file-input");
     if (docFile) {
@@ -1291,7 +1659,6 @@ if ("serviceWorker" in navigator) {
             credentials: "include",
             body: fd,
           };
-          // Add JWT auth header if using legacy login
           if (getAuthType() === "jwt") {
             fetchOpts.headers = { Authorization: "Bearer " + getToken() };
           }
@@ -1300,7 +1667,7 @@ if ("serviceWorker" in navigator) {
             fetchOpts
           );
           const data = await res.json().catch(() => ({}));
-          if (res.status === 202) meetingStatus("Document queued — AI is processing...");
+          if (res.status === 202) meetingStatus("Document queued \u2014 AI is processing...");
           else if (!res.ok) meetingStatus("Upload failed: " + (data.error || data.message || res.statusText));
         } catch (err) {
           meetingStatus("Upload failed: " + String(err && err.message ? err.message : err));
@@ -1330,7 +1697,6 @@ if ("serviceWorker" in navigator) {
         }
         if (!q) return;
 
-        // Add user message to conversation
         notebookConversation.push({ role: "user", text: q });
         notebookConversation.push({ role: "ai", text: "Thinking..." });
         renderNotebookConversation();
@@ -1360,7 +1726,6 @@ if ("serviceWorker" in navigator) {
               res.statusText;
             throw new Error(err);
           }
-          // Update the "Thinking..." message with actual answer
           notebookConversation[notebookConversation.length - 1].text = data.answer || "No answer received.";
         } catch (err) {
           const msg = err && err.message ? err.message : String(err);
@@ -1381,6 +1746,55 @@ if ("serviceWorker" in navigator) {
       });
     }
 
+    // Summary view events
+    on("btn-back-lobby", "click", () => {
+      summaryRoomCode = null;
+      summaryMeetingName = "";
+      showView("lobby");
+      refreshLobbyUser();
+    });
+
+    on("btn-export-summary", "click", () => {
+      if (!summaryRoomCode) return;
+      window.open("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/export", "_blank");
+    });
+
+    // Attendee popup
+    on("btn-show-attendees", "click", () => {
+      const popup = $("attendee-popup");
+      if (popup) { popup.classList.remove("hidden"); renderIcons(); }
+    });
+    on("btn-attendee-close", "click", () => {
+      const popup = $("attendee-popup");
+      if (popup) popup.classList.add("hidden");
+    });
+    const attPopup = $("attendee-popup");
+    if (attPopup) {
+      attPopup.addEventListener("click", (e) => {
+        if (e.target === attPopup) attPopup.classList.add("hidden");
+      });
+    }
+
+    const summaryForm = $("form-summary-chat");
+    if (summaryForm) {
+      summaryForm.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const input = $("summary-chat-input");
+        const q = input && input.value ? input.value.trim() : "";
+        if (!q) return;
+        input.value = "";
+        askSummaryQuestion(q);
+      });
+    }
+
+    const summaryInput = $("summary-chat-input");
+    if (summaryInput) {
+      summaryInput.addEventListener("input", () => {
+        summaryInput.style.height = "auto";
+        summaryInput.style.height = Math.min(summaryInput.scrollHeight, 120) + "px";
+      });
+    }
+
     initInsightTabs();
     initSidebarTabs();
   }
@@ -1389,6 +1803,7 @@ if ("serviceWorker" in navigator) {
   async function boot() {
     wireEvents();
     initStt();
+    populateLangSelects();
 
     // Check for existing session
     const token = getToken();

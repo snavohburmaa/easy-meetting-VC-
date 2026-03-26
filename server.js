@@ -17,6 +17,8 @@ import * as rooms from "./lib/rooms.js";
 import * as roomDocuments from "./lib/roomDocuments.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 import * as meetingDoc from "./lib/meetingDocumentPipeline.js";
+import * as meetingTranscript from "./lib/meetingTranscript.js";
+import { generateSummary, askAboutMeeting, getSummary } from "./lib/meetingSummary.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getKey, markLimited, isRateLimitError } from "./lib/geminiKeys.js";
 
@@ -24,7 +26,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
-const WHISPER_URL = process.env.WHISPER_URL || "http://127.0.0.1:5555";
+const HOST = process.env.HOST || "0.0.0.0";
+const LT_URL = process.env.LIBRETRANSLATE_URL || "https://libretranslate.com";
+const LT_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
 
 /* Ensure uploads directory exists at startup */
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads"));
@@ -66,6 +70,7 @@ function joinUrlFromSocket(socket, code) {
   const proto = socket.handshake.headers["x-forwarded-proto"] || "http";
   return `${proto}://${host}/?join=${encodeURIComponent(code)}`;
 }
+
 
 /** GET /api/health */
 app.get("/api/health", (_req, res) => {
@@ -117,6 +122,51 @@ const LANG_NAMES = {
   ms:"Malay",tl:"Filipino",
 };
 
+/**
+ * Batch-translate text into multiple target languages in a single Gemini call.
+ * @param {string} text - Source text
+ * @param {string} sourceLang - Source language code (e.g. "en")
+ * @param {string[]} targetLangs - Array of target language codes (e.g. ["th", "ja"])
+ * @returns {Promise<Object<string, string>>} Map of langCode -> translatedText
+ */
+async function batchTranslate(text, sourceLang, targetLangs) {
+  // Filter out source language and deduplicate
+  const unique = [...new Set(targetLangs.filter(l => l !== sourceLang))];
+  if (!unique.length) return {};
+
+  // If only one target, use a simple prompt
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const targets = unique.map(l => `"${l}": "${LANG_NAMES[l] || l}"`).join(", ");
+  const sourceName = LANG_NAMES[sourceLang] || sourceLang;
+
+  const prompt = unique.length === 1
+    ? `Translate this ${sourceName} text to ${LANG_NAMES[unique[0]] || unique[0]}. Return ONLY the translated text, nothing else.\n\n${text}`
+    : `Translate this ${sourceName} text into the following languages. Return ONLY a JSON object mapping language code to translated text, no markdown fences.\nTarget languages: {${targets}}\n\nText: ${text}`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const apiKey = getKey();
+    if (!apiKey) return {};
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const raw = result.response.text().trim();
+
+      if (unique.length === 1) {
+        return { [unique[0]]: raw };
+      }
+      // Parse JSON
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+      return JSON.parse(cleaned);
+    } catch (err) {
+      if (isRateLimitError(err)) { markLimited(apiKey, 60000); continue; }
+      console.error("[translate] Gemini error:", err.message || err);
+      return {};
+    }
+  }
+  return {};
+}
+
 /** POST /api/translate { text, source, target } -> { translated } */
 app.post("/api/translate", async (req, res) => {
   const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 1000) : "";
@@ -148,6 +198,173 @@ app.post("/api/translate", async (req, res) => {
     }
   }
   return res.status(429).json({ error: "All API keys rate limited. Try again shortly." });
+});
+
+/** GET /api/meeting-summary/:code — retrieve generated summary */
+app.get("/api/meeting-summary/:code", (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+  const { rawTranscript, ...safe } = data;
+  res.json(safe);
+});
+
+/** POST /api/meeting-summary/:code/ask — ask AI about the meeting */
+app.post("/api/meeting-summary/:code/ask", async (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const question = typeof req.body?.question === "string" ? req.body.question.trim().slice(0, 2000) : "";
+  if (!question) return res.status(400).json({ error: "question required" });
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+  try {
+    const answer = await askAboutMeeting(code, question);
+    res.json({ answer });
+  } catch (err) {
+    res.status(502).json({ error: "AI failed", message: (err.message || "").slice(0, 200) });
+  }
+});
+
+/** PATCH /api/meeting-summary/:code/name — set meeting name */
+app.patch("/api/meeting-summary/:code/name", (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+  const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+  data.meetingName = name;
+  res.json({ ok: true });
+});
+
+/** GET /api/meeting-summary/:code/export — export summary as downloadable text */
+app.get("/api/meeting-summary/:code/export", (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+
+  const W = 58; // content width
+  const meetingTitle = data.meetingName || "Meeting Summary";
+  const dateStr = new Date(data.createdAt).toLocaleString();
+  const duration = `${data.durationMinutes} minute(s)`;
+  const attendees = data.attendees.join(", ") || "N/A";
+
+  // ── helpers ──
+  const hr      = (ch = "\u2500") => ch.repeat(W);
+  const dblHr   = () => "\u2550".repeat(W);
+  const center  = (s) => { const pad = Math.max(0, Math.floor((W - s.length) / 2)); return " ".repeat(pad) + s; };
+  const wrap    = (text, indent = 0, width = W - indent) => {
+    const words = text.split(/\s+/);
+    const lines = [];
+    let line = "";
+    for (const w of words) {
+      if (line && (line.length + 1 + w.length) > width) { lines.push(" ".repeat(indent) + line); line = w; }
+      else { line = line ? line + " " + w : w; }
+    }
+    if (line) lines.push(" ".repeat(indent) + line);
+    return lines.join("\n");
+  };
+
+  let c = "";
+
+  // ── Header ──
+  c += `\u250C${"\u2500".repeat(W + 2)}\u2510\n`;
+  c += `\u2502 ${center(meetingTitle).padEnd(W)} \u2502\n`;
+  c += `\u2514${"\u2500".repeat(W + 2)}\u2518\n`;
+  c += "\n";
+
+  // ── Meeting info ──
+  c += `  \u25CF  Date       :  ${dateStr}\n`;
+  c += `  \u25CF  Duration   :  ${duration}\n`;
+  c += `  \u25CF  Room       :  ${code}\n`;
+  c += `  \u25CF  Attendees  :  ${attendees}\n`;
+  c += "\n";
+
+  // ── Attendee details ──
+  if (data.attendeeDetails && data.attendeeDetails.length) {
+    c += `  \u25B8 ATTENDEES\n`;
+    c += `  ${hr()}\n`;
+    const fmtT = (ts) => ts ? new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+    const fmtD = (j, l) => { const m = Math.round(((l || Date.now()) - j) / 60000); return m < 1 ? "<1 min" : m + " min"; };
+    data.attendeeDetails.forEach((a) => {
+      c += `    \u25CF  ${a.name.padEnd(18)}  Joined: ${fmtT(a.joinedAt)}   Left: ${fmtT(a.leftAt)}   Duration: ${fmtD(a.joinedAt, a.leftAt)}\n`;
+    });
+    c += "\n";
+  }
+
+  c += dblHr() + "\n";
+
+  // ── Overview ──
+  c += "\n";
+  c += `  \u25B8 OVERVIEW\n`;
+  c += `  ${hr()}\n`;
+  c += wrap(data.summary || "No summary available.", 4) + "\n";
+  c += "\n";
+
+  // ── Topics ──
+  if (data.topics.length) {
+    c += `  \u25B8 TOPICS DISCUSSED\n`;
+    c += `  ${hr()}\n`;
+    data.topics.forEach((t, i) => {
+      c += `\n    ${i + 1}.  ${t.title}\n`;
+      c += wrap(t.details, 8) + "\n";
+    });
+    c += "\n";
+  }
+
+  // ── Assignments ──
+  if (data.assignments.length) {
+    c += `  \u25B8 ACTION ITEMS\n`;
+    c += `  ${hr()}\n`;
+    data.assignments.forEach((a, i) => {
+      c += `    ${i + 1}.  [ ${a.assignee} ]  ${a.task}\n`;
+    });
+    c += "\n";
+  }
+
+  // ── Key Decisions ──
+  if (data.keyDecisions && data.keyDecisions.length) {
+    c += `  \u25B8 KEY DECISIONS\n`;
+    c += `  ${hr()}\n`;
+    data.keyDecisions.forEach((d, i) => {
+      c += `    ${i + 1}.  ${d}\n`;
+    });
+    c += "\n";
+  }
+
+  // ── Transcript ──
+  if (data.rawTranscript) {
+    c += dblHr() + "\n";
+    c += "\n";
+    c += `  \u25B8 FULL TRANSCRIPT\n`;
+    c += `  ${hr()}\n\n`;
+    // Parse and reformat the raw transcript lines
+    const lines = data.rawTranscript.split("\n");
+    let inTranscript = false;
+    for (const line of lines) {
+      if (line.startsWith("=== Meeting Transcript ===")) { inTranscript = true; continue; }
+      if (!inTranscript) continue;
+      if (!line.trim()) continue;
+      // Lines look like: "10:30 AM [Voice] Alice: hello"
+      const m = line.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM)?)\s*\[(\w+)]\s*(.+?):\s*(.*)$/i);
+      if (m) {
+        const [, time, type, speaker, text] = m;
+        const tag = type.toLowerCase() === "voice" ? "\u{1F399}" : type.toLowerCase() === "sign" ? "\u{1F91F}" : "\u{1F4AC}";
+        c += `    ${time.padEnd(9)} ${tag}  ${speaker.padEnd(14)}  ${text}\n`;
+      } else {
+        c += `    ${line}\n`;
+      }
+    }
+    c += "\n";
+  }
+
+  // ── Footer ──
+  c += dblHr() + "\n";
+  c += center("Generated by Ez Meeting") + "\n";
+  c += center(dateStr) + "\n";
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  const safeName = (data.meetingName || "").replace(/[^a-zA-Z0-9 _-]/g, "").trim().replace(/\s+/g, "-");
+  const fileName = safeName ? `${safeName}.txt` : `meeting-summary-${code}.txt`;
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(c);
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -197,17 +414,24 @@ async function clearRoomSockets(code) {
 
 io.on("connection", (socket) => {
   socket.data.roomCode = null;
-  socket.data.preferredLanguage = "en";
+  socket.data.speakLang = "en";
+  socket.data.subtitleLang = "en";
 
-  socket.on("room:create", (ack) => {
+  socket.on("room:create", (payload, ack) => {
+    // Support both (ack) and (payload, ack) signatures
+    if (typeof payload === "function") { ack = payload; payload = {}; }
     if (socket.data.roomCode) {
       if (typeof ack === "function") ack({ error: "already_in_room" });
       return;
     }
+    socket.data.speakLang = typeof payload?.speakLang === "string" ? payload.speakLang.slice(0, 10) : "en";
+    socket.data.subtitleLang = typeof payload?.subtitleLang === "string" ? payload.subtitleLang.slice(0, 10) : "en";
     const code = rooms.createRoom(socket.id);
     socket.join(code);
     socket.data.roomCode = code;
     rooms.setParticipantMeta(code, socket.id, socket.user);
+    meetingTranscript.initRoom(code);
+    meetingTranscript.addAttendee(code, socket.user.name);
     const peers = rooms.listPeers(code, socket.id);
     if (typeof ack === "function") {
       ack({
@@ -234,9 +458,13 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ error: "not_found" });
       return;
     }
+    socket.data.speakLang = typeof payload?.speakLang === "string" ? payload.speakLang.slice(0, 10) : "en";
+    socket.data.subtitleLang = typeof payload?.subtitleLang === "string" ? payload.subtitleLang.slice(0, 10) : "en";
     socket.join(codeRaw);
     socket.data.roomCode = codeRaw;
     rooms.setParticipantMeta(codeRaw, socket.id, socket.user);
+    meetingTranscript.initRoom(codeRaw);
+    meetingTranscript.addAttendee(codeRaw, socket.user.name);
     const peerList = rooms.listPeers(codeRaw, socket.id);
     const host = rooms.isHost(codeRaw, socket.id);
     if (typeof ack === "function") {
@@ -273,9 +501,11 @@ io.on("connection", (socket) => {
     if (!code) return;
     const text = typeof payload?.text === "string" ? payload.text.slice(0, 2000) : "";
     if (!text.trim()) return;
+    const chatAt = Date.now();
+    meetingTranscript.addEntry(code, { at: chatAt, from: socket.user.name, text, type: "chat" });
     io.to(code).emit("chat:message", {
       text,
-      at: Date.now(),
+      at: chatAt,
       from: socket.user.name,
       socketId: socket.id,
     });
@@ -317,20 +547,22 @@ io.on("connection", (socket) => {
         ? payload.translatedText.trim().slice(0, 500)
         : "";
 
+    const signAt = Date.now();
+    meetingTranscript.addEntry(code, { at: signAt, from: socket.user.name, text: text.trim(), type: "sign" });
     io.to(code).emit("sign:caption", {
       text: text.trim(),
       gestureKey,
       kind,
       lang: lang || undefined,
       translatedText: translatedText || undefined,
-      at: Date.now(),
+      at: signAt,
       from: socket.user.name,
       socketId: socket.id,
     });
   });
 
-  /* ── Real-time voice-to-text captions ── */
-  socket.on("caption:voice", (payload) => {
+  /* ── Real-time voice-to-text captions with translation ── */
+  socket.on("caption:voice", async (payload) => {
     const code = socket.data.roomCode;
     if (!code) return;
     const now = Date.now();
@@ -341,63 +573,83 @@ io.on("connection", (socket) => {
 
     const text = typeof payload?.text === "string" ? payload.text.slice(0, 1000) : "";
     const isFinal = !!payload?.isFinal;
-    const lang = typeof payload?.lang === "string" ? payload.lang.slice(0, 16) : "";
-    socket.to(code).emit("caption:voice", {
-      text,
-      isFinal,
-      lang,
-      at: Date.now(),
-      from: socket.user.name,
-      socketId: socket.id,
-    });
-  });
+    const senderLang = socket.data.speakLang || "en";
 
-  /* ── Server-side Whisper transcription ── */
-  socket.on("audio:chunk", async (payload) => {
-    const code = socket.data.roomCode;
-    if (!code) return;
-
-    // Socket.io delivers binary fields as Buffer in Node.js
-    const audioBuffer = payload?.audio;
-    if (!audioBuffer || !Buffer.isBuffer(audioBuffer)) return;
-    // Skip tiny payloads that are just silence headers
-    if (audioBuffer.length < 500) return;
-
-    const lang = typeof payload?.language === "string" ? payload.language.slice(0, 12) : "";
-    const ext = typeof payload?.ext === "string" ? payload.ext.slice(0, 5) : ".webm";
-    const filename = "chunk" + (ext.startsWith(".") ? ext : "." + ext);
-
-    try {
-      const blob = new Blob([audioBuffer], { type: ext === ".mp4" ? "audio/mp4" : ext === ".ogg" ? "audio/ogg" : "audio/webm" });
-      const form = new FormData();
-      form.append("audio", blob, filename);
-      if (lang) form.append("language", lang);
-
-      const resp = await fetch(`${WHISPER_URL}/transcribe`, {
-        method: "POST",
-        body: form,
+    // For interim results, relay immediately without translation
+    if (!isFinal || !text.trim()) {
+      socket.to(code).emit("caption:voice", {
+        text, isFinal, lang: senderLang, at: now,
+        from: socket.user.name, socketId: socket.id,
       });
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => "");
-        console.error("[whisper] HTTP", resp.status, errText);
-        return;
-      }
-      const result = await resp.json();
-      const text = result.text || "";
-      if (!text.trim()) return;
+      return;
+    }
 
-      // Emit transcription to the entire room (including sender)
-      io.to(code).emit("caption:voice", {
+    // Final result — collect target languages from all participants in the room
+    const roomSockets = await io.in(code).fetchSockets();
+    const targetLangs = new Set();
+    for (const s of roomSockets) {
+      if (s.id !== socket.id) targetLangs.add(s.data.subtitleLang || "en");
+    }
+    // Always include English for the meeting summary/transcript
+    targetLangs.add("en");
+
+    // Translate via Gemini (skip if sender speaks the only needed language)
+    let translations = {};
+    const needsTranslation = [...targetLangs].some(l => l !== senderLang);
+    if (needsTranslation) {
+      translations = await batchTranslate(text.trim(), senderLang, [...targetLangs]);
+    }
+
+    // Store English version in transcript for summary
+    const englishText = senderLang === "en" ? text.trim() : (translations["en"] || text.trim());
+    meetingTranscript.addEntry(code, {
+      at: now, from: socket.user.name, text: englishText, type: "voice",
+    });
+
+    // Emit personalized translated captions to each participant
+    for (const s of roomSockets) {
+      if (s.id === socket.id) continue;
+      const theirLang = s.data.subtitleLang || "en";
+      const translatedText = (theirLang === senderLang)
+        ? text.trim()
+        : (translations[theirLang] || text.trim());
+      s.emit("caption:voice", {
         text: text.trim(),
+        translatedText,
         isFinal: true,
-        lang: result.language || lang || "",
-        at: Date.now(),
+        lang: senderLang,
+        at: now,
         from: socket.user.name,
         socketId: socket.id,
       });
-    } catch (err) {
-      console.error("[whisper]", err.message || err);
     }
+  });
+
+  // ── Screen share permission flow ──
+  socket.on("screen:request", () => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const room = rooms.getRoom(code);
+    if (!room) return;
+    // Host can share directly — no permission needed
+    if (room.hostId === socket.id) {
+      socket.emit("screen:approved");
+      return;
+    }
+    // Send request to host
+    const name = socket.user?.name || "Someone";
+    io.to(room.hostId).emit("screen:request", { fromId: socket.id, fromName: name });
+  });
+
+  socket.on("screen:respond", (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const room = rooms.getRoom(code);
+    if (!room || room.hostId !== socket.id) return; // only host can respond
+    const targetId = typeof payload?.targetId === "string" ? payload.targetId : "";
+    const approved = !!payload?.approved;
+    if (!targetId) return;
+    io.to(targetId).emit(approved ? "screen:approved" : "screen:denied");
   });
 
   socket.on("room:end", async () => {
@@ -405,12 +657,36 @@ io.on("connection", (socket) => {
     if (!code) return;
     if (!rooms.endRoomByHost(code, socket.id)) return;
     roomDocuments.clearRoom(code);
-    io.to(code).emit("room:ended", { reason: "host_ended" });
+    // Generate summary before notifying clients
+    let summaryCode = null;
+    const transcript = meetingTranscript.getTranscript(code);
+    if (transcript && transcript.entries.length > 0) {
+      summaryCode = code;
+      generateSummary(code).then(() => {
+        meetingTranscript.deleteTranscript(code);
+      }).catch((err) => {
+        console.error("[meeting-summary] generation failed:", err);
+        meetingTranscript.deleteTranscript(code);
+      });
+    } else {
+      meetingTranscript.deleteTranscript(code);
+    }
+    io.to(code).emit("room:ended", { reason: "host_ended", summaryCode });
     await clearRoomSockets(code);
   });
 
-  socket.on("room:leave", async () => {
+  socket.on("room:leave", async (ack) => {
+    const code = socket.data.roomCode;
+    let summaryCode = null;
+    if (code) {
+      const transcript = meetingTranscript.getTranscript(code);
+      if (transcript && transcript.entries.length > 0) {
+        summaryCode = code;
+        try { await generateSummary(code); } catch (_) {}
+      }
+    }
     await leaveSocketRoom(socket);
+    if (typeof ack === "function") ack({ summaryCode });
   });
 
   socket.on("disconnecting", async () => {
@@ -421,6 +697,7 @@ io.on("connection", (socket) => {
 async function leaveSocketRoom(socket) {
   const code = socket.data.roomCode;
   if (!code) return;
+  meetingTranscript.markAttendeeLeft(code, socket.user.name);
   const result = rooms.removeParticipant(socket.id);
   socket.data.roomCode = null;
   if (!result) {
@@ -429,8 +706,21 @@ async function leaveSocketRoom(socket) {
   }
   if (result.ended) {
     roomDocuments.clearRoom(result.code);
+    let summaryCode = null;
+    const transcript = meetingTranscript.getTranscript(result.code);
+    if (transcript && transcript.entries.length > 0) {
+      summaryCode = result.code;
+      generateSummary(result.code).then(() => {
+        meetingTranscript.deleteTranscript(result.code);
+      }).catch(() => {
+        meetingTranscript.deleteTranscript(result.code);
+      });
+    } else {
+      meetingTranscript.deleteTranscript(result.code);
+    }
     io.to(result.code).emit("room:ended", {
       reason: result.reason === "host_left" ? "host_left" : "empty",
+      summaryCode,
     });
     await clearRoomSockets(result.code);
   } else {
@@ -453,6 +743,7 @@ server.on("error", (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`Ez meeting: http://localhost:${PORT}`);
+  console.log(`Listening on ${HOST}:${PORT} (LAN ready)`);
 });

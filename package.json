@@ -7,6 +7,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:all": "bash start.sh",
     "dev": "node server.js",
     "build:handsigns": "esbuild scripts/handsigns-entry.js --bundle --format=iife --global-name=HandSignAlphabetKit --outfile=public/vendor/handsigns-alphabet.js"
   },

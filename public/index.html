@@ -80,7 +80,7 @@
             Free &amp; Open-Source MVP
           </div>
           <h2>Meet without friction.</h2>
-          <p>Instant video rooms with real-time chat, hand-sign captions, and AI-powered document insights — just share a code.</p>
+          <p>Instant video rooms with real-time chat, hand-sign captions, and AI-powered document insights.</p>
           <div class="lobby-user-chip">
             <div class="lobby-user-avatar" id="lobby-user-avatar">?</div>
             <span id="lobby-user"></span>
@@ -97,6 +97,18 @@
             </span>
             <h3>Host a Meeting</h3>
             <p>Create an instant room. Share the code or QR with anyone — they can join in seconds.</p>
+            <div class="lang-select-row">
+              <label class="lang-select-label">
+                <i data-lucide="mic" style="width:13px;height:13px;stroke:var(--text-2);stroke-width:2;"></i>
+                I speak
+                <select id="host-speak-lang" class="lang-select"></select>
+              </label>
+              <label class="lang-select-label">
+                <i data-lucide="subtitles" style="width:13px;height:13px;stroke:var(--text-2);stroke-width:2;"></i>
+                Subtitles in
+                <select id="host-subtitle-lang" class="lang-select"></select>
+              </label>
+            </div>
             <button type="button" id="btn-host">
               <i data-lucide="plus-circle" style="width:16px;height:16px;stroke:#fff;stroke-width:2;"></i>
               Start Meeting
@@ -111,6 +123,18 @@
             </span>
             <h3>Join a Meeting</h3>
             <p>Enter the room code you received, or paste a join link to hop straight in.</p>
+            <div class="lang-select-row">
+              <label class="lang-select-label">
+                <i data-lucide="mic" style="width:13px;height:13px;stroke:var(--text-2);stroke-width:2;"></i>
+                I speak
+                <select id="join-speak-lang" class="lang-select"></select>
+              </label>
+              <label class="lang-select-label">
+                <i data-lucide="subtitles" style="width:13px;height:13px;stroke:var(--text-2);stroke-width:2;"></i>
+                Subtitles in
+                <select id="join-subtitle-lang" class="lang-select"></select>
+              </label>
+            </div>
             <form id="form-join">
               <div class="join-input-row">
                 <label>
@@ -174,7 +198,6 @@
 
         <div class="lobby-footer">
           <p id="lobby-error" class="error" role="alert" style="margin-bottom:0.5rem;"></p>
-          <p class="muted small">Meeting codes are invalidated when the room ends — same as Zoom.</p>
         </div>
       </div>
     </section>
@@ -189,12 +212,47 @@
         <div class="meeting-header-left">
           <span class="meeting-brand">Ez Meeting</span>
           <span class="badge" id="meeting-code-label"></span>
-          <button type="button" id="btn-copy-link" class="small secondary">
-            <i data-lucide="clipboard-copy" style="width:13px;height:13px;stroke:currentColor;stroke-width:2;"></i>
-            Copy invite link
-          </button>
         </div>
         <span id="meeting-status" class="meeting-status" role="status"></span>
+        <div class="meeting-header-right">
+          <button type="button" id="btn-share-meeting" class="small secondary">
+            <i data-lucide="share-2" style="width:13px;height:13px;stroke:currentColor;stroke-width:2;"></i>
+            Share
+          </button>
+          <button type="button" id="btn-leave" class="secondary small">
+            <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+            Leave
+          </button>
+          <button type="button" id="btn-end" class="danger small hidden">
+            <i data-lucide="x-circle" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+            End for all
+          </button>
+        </div>
+      </div>
+
+      <!-- Share Meeting Modal -->
+      <div id="share-modal" class="share-modal hidden">
+        <div class="share-modal-content">
+          <div class="share-modal-header">
+            <span>Share Meeting</span>
+            <button type="button" id="btn-share-close" class="ghost small">
+              <i data-lucide="x" style="width:18px;height:18px;"></i>
+            </button>
+          </div>
+          <div class="share-modal-body">
+            <div class="share-qr-wrap">
+              <img id="qr-img" alt="Meeting QR code" width="200" height="200" />
+            </div>
+            <div class="share-code-row">
+              <span class="share-code-label">Meeting Code</span>
+              <span class="share-code-value" id="share-code-display"></span>
+            </div>
+            <button type="button" id="btn-copy-link" class="secondary" style="width:100%;">
+              <i data-lucide="clipboard-copy" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
+              Copy invite link
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Main content: stage + sidebar -->
@@ -241,10 +299,9 @@
             </div>
           </div>
 
-          <!-- QR / share row -->
+          <!-- Subtitle row -->
           <div class="qr-row">
-            <img id="qr-img" alt="Meeting QR code" width="72" height="72" />
-            <p class="qr-hint muted small">Scan to join · QR invalidates when the meeting ends</p>
+            <div id="subtitle-box" class="subtitle-box" aria-live="polite"></div>
           </div>
 
         </div><!-- /.meeting-stage -->
@@ -280,36 +337,8 @@
           <div class="sidebar-panel chat-panel active" id="panel-chat">
             <div id="chat-log" class="chat-log" aria-live="polite"></div>
 
-            <!-- Voice-to-text live transcript -->
-            <div id="stt-live-bar" class="stt-live-bar hidden">
-              <div class="stt-pulse"></div>
-              <span id="stt-live-text" class="stt-live-text">Listening...</span>
-              <select id="stt-lang-select" class="stt-lang-select" title="Speech language">
-                <option value="en-US">English</option>
-                <option value="my-MM">Myanmar</option>
-                <option value="th-TH">Thai</option>
-                <option value="ja-JP">Japanese</option>
-                <option value="zh-CN">Chinese</option>
-                <option value="ko-KR">Korean</option>
-                <option value="fr-FR">French</option>
-                <option value="de-DE">German</option>
-                <option value="es-ES">Spanish</option>
-                <option value="pt-BR">Portuguese</option>
-                <option value="ru-RU">Russian</option>
-                <option value="hi-IN">Hindi</option>
-                <option value="ar-SA">Arabic</option>
-                <option value="vi-VN">Vietnamese</option>
-                <option value="id-ID">Indonesian</option>
-                <option value="tr-TR">Turkish</option>
-                <option value="it-IT">Italian</option>
-              </select>
-            </div>
-
             <form id="form-chat" class="chat-form">
               <input id="chat-input" type="text" maxlength="2000" placeholder="Message..." autocomplete="off" />
-              <button type="button" id="btn-stt" class="icon-btn stt-btn" title="Voice to text">
-                <i data-lucide="mic" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-              </button>
               <button type="submit">
                 <i data-lucide="send" style="width:14px;height:14px;stroke:#fff;stroke-width:2;"></i>
               </button>
@@ -409,10 +438,10 @@
             <span>Chat</span>
           </div>
           <div class="control-label">
-            <button type="button" id="btn-open-doc" class="icon-btn" title="Open shared document">
-              <i data-lucide="file-text" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
+            <button type="button" id="btn-share-screen" class="icon-btn" title="Share screen">
+              <i data-lucide="monitor-up" style="width:20px;height:20px;stroke:currentColor;stroke-width:2;"></i>
             </button>
-            <span>Document</span>
+            <span>Screen</span>
           </div>
           <div class="control-label" style="position:relative;">
             <button type="button" id="btn-settings" class="icon-btn" title="Settings">
@@ -437,56 +466,164 @@
                 </label>
               </div>
 
-              <div class="settings-row">
-                <div class="settings-row-left">
-                  <i data-lucide="languages" style="width:16px;height:16px;stroke:currentColor;stroke-width:2;"></i>
-                  <span>Subtitle language</span>
-                </div>
-                <select id="subtitle-lang-select" class="settings-select">
-                  <option value="">Original</option>
-                  <option value="en">English</option>
-                  <option value="my">Myanmar</option>
-                  <option value="th">Thai</option>
-                  <option value="ja">Japanese</option>
-                  <option value="zh">Chinese</option>
-                  <option value="ko">Korean</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="es">Spanish</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="ru">Russian</option>
-                  <option value="hi">Hindi</option>
-                  <option value="ar">Arabic</option>
-                  <option value="vi">Vietnamese</option>
-                  <option value="id">Indonesian</option>
-                  <option value="tr">Turkish</option>
-                  <option value="it">Italian</option>
-                  <option value="nl">Dutch</option>
-                  <option value="pl">Polish</option>
-                  <option value="uk">Ukrainian</option>
-                  <option value="sv">Swedish</option>
-                  <option value="ta">Tamil</option>
-                  <option value="bn">Bengali</option>
-                  <option value="ms">Malay</option>
-                  <option value="tl">Filipino</option>
-                </select>
-              </div>
             </div>
           </div>
         </div>
-        <div class="controls-right">
-          <button type="button" id="btn-leave" class="secondary small">
-            <i data-lucide="log-out" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-            Leave
-          </button>
-          <button type="button" id="btn-end" class="danger small hidden">
-            <i data-lucide="x-circle" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
-            End for all
-          </button>
-        </div>
+        <div class="controls-right"></div>
       </div>
 
     </section><!-- /#view-meeting -->
+
+    <!-- ============================================================
+         MODAL: NAME YOUR MEETING
+    ============================================================ -->
+    <div id="meeting-name-modal" class="meeting-name-modal hidden">
+      <div class="meeting-name-modal-content">
+        <div class="meeting-name-modal-icon">
+          <i data-lucide="file-text" style="width:28px;height:28px;stroke:#fff;stroke-width:2;"></i>
+        </div>
+        <h3>Name your meeting</h3>
+        <p class="hint">Give this meeting a name, or leave blank to skip.</p>
+        <form id="form-meeting-name">
+          <input id="meeting-name-input" type="text" maxlength="120" placeholder="e.g. Weekly Standup, Sprint Review..." autocomplete="off" />
+          <div class="meeting-name-modal-actions">
+            <button type="button" id="btn-skip-name" class="secondary small">Skip</button>
+            <button type="submit" class="small">
+              <i data-lucide="check" style="width:14px;height:14px;stroke:#fff;stroke-width:2.5;"></i>
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         VIEW: MEETING SUMMARY
+    ============================================================ -->
+    <section id="view-summary" class="hidden">
+      <div class="summary-container">
+        <div class="summary-header">
+          <div class="summary-header-left">
+            <div class="summary-icon">
+              <i data-lucide="file-text" style="width:28px;height:28px;stroke:#fff;stroke-width:2;"></i>
+            </div>
+            <div>
+              <h2 id="summary-title">Meeting Summary</h2>
+              <p class="summary-meta" id="summary-meta"></p>
+            </div>
+          </div>
+          <div class="summary-header-actions">
+            <button type="button" id="btn-export-summary" class="secondary small">
+              <i data-lucide="download" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>
+              Export
+            </button>
+            <button type="button" id="btn-back-lobby" class="small">
+              <i data-lucide="arrow-left" style="width:14px;height:14px;stroke:#fff;stroke-width:2;"></i>
+              Back to Lobby
+            </button>
+          </div>
+        </div>
+
+        <div class="summary-body">
+          <!-- Left: Summary content -->
+          <div class="summary-content">
+            <!-- Loading state -->
+            <div id="summary-loading" class="summary-loading">
+              <div class="summary-spinner"></div>
+              <p>Generating meeting summary...</p>
+            </div>
+
+            <!-- Summary cards -->
+            <div id="summary-cards" class="summary-cards hidden">
+              <!-- Overview card -->
+              <div class="summary-card">
+                <div class="summary-card-header">
+                  <i data-lucide="align-left" style="width:16px;height:16px;stroke:var(--accent-2);stroke-width:2;"></i>
+                  <span>Overview</span>
+                </div>
+                <p id="summary-text" class="summary-card-body"></p>
+              </div>
+
+              <!-- Info row -->
+              <div class="summary-info-row">
+                <div class="summary-info-chip">
+                  <i data-lucide="clock" style="width:14px;height:14px;stroke:var(--cyan);stroke-width:2;"></i>
+                  <span id="summary-duration"></span>
+                </div>
+                <div class="summary-info-chip summary-info-chip--clickable" id="btn-show-attendees" title="View attendee details">
+                  <i data-lucide="users" style="width:14px;height:14px;stroke:var(--green);stroke-width:2;"></i>
+                  <span id="summary-attendees"></span>
+                </div>
+
+                <!-- Attendee details popup -->
+                <div id="attendee-popup" class="attendee-popup hidden">
+                  <div class="attendee-popup-content">
+                    <div class="attendee-popup-header">
+                      <i data-lucide="users" style="width:16px;height:16px;stroke:var(--green);stroke-width:2;"></i>
+                      <span>Attendees</span>
+                      <button type="button" id="btn-attendee-close" class="ghost small" style="margin-left:auto;">
+                        <i data-lucide="x" style="width:16px;height:16px;"></i>
+                      </button>
+                    </div>
+                    <div id="attendee-list" class="attendee-list"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Topics card -->
+              <div class="summary-card" id="summary-topics-card">
+                <div class="summary-card-header">
+                  <i data-lucide="list" style="width:16px;height:16px;stroke:var(--amber);stroke-width:2;"></i>
+                  <span>Topics Discussed</span>
+                </div>
+                <div id="summary-topics" class="summary-card-body"></div>
+              </div>
+
+              <!-- Assignments card -->
+              <div class="summary-card" id="summary-assignments-card">
+                <div class="summary-card-header">
+                  <i data-lucide="check-square" style="width:16px;height:16px;stroke:var(--green);stroke-width:2;"></i>
+                  <span>Assignments / Action Items</span>
+                </div>
+                <div id="summary-assignments" class="summary-card-body"></div>
+              </div>
+
+              <!-- Key Decisions card -->
+              <div class="summary-card" id="summary-decisions-card">
+                <div class="summary-card-header">
+                  <i data-lucide="bookmark" style="width:16px;height:16px;stroke:#a78bfa;stroke-width:2;"></i>
+                  <span>Key Decisions</span>
+                </div>
+                <div id="summary-decisions" class="summary-card-body"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: AI Chat -->
+          <div class="summary-chat">
+            <div class="summary-chat-header">
+              <i data-lucide="message-circle-question" style="width:16px;height:16px;stroke:var(--amber);stroke-width:2;"></i>
+              <span>Ask about this meeting</span>
+              <span class="notebook-badge">AI</span>
+            </div>
+            <div id="summary-chat-log" class="summary-chat-log" aria-live="polite">
+              <div class="notebook-empty">
+                <i data-lucide="message-circle-question" style="width:24px;height:24px;stroke:var(--text-3);stroke-width:1.5;"></i>
+                <p>Ask any question about this meeting. The AI will use the full transcript to answer.</p>
+              </div>
+            </div>
+            <form id="form-summary-chat" class="notebook-input-form">
+              <div class="notebook-input-wrap">
+                <textarea id="summary-chat-input" rows="1" maxlength="2000" placeholder="Ask about the meeting..." autocomplete="off"></textarea>
+                <button type="submit" class="notebook-send-btn" title="Send">
+                  <i data-lucide="arrow-up" style="width:16px;height:16px;stroke:#fff;stroke-width:2.5;"></i>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/vendor/simplepeer.min.js"></script>

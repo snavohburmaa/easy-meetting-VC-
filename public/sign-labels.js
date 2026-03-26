@@ -5,19 +5,19 @@
 (function () {
   const MEDIAPIPE_PHRASES = {
     None: null,
-    Closed_Fist: "✊ (pause / send line in spell mode)",
-    Open_Palm: "⬜ (space in spell mode)",
-    Pointing_Up: "☝️ Up / one",
-    Thumb_Down: "👎 No",
-    Thumb_Up: "👍 Yes / OK",
-    Victory: "✌️ Peace / V",
-    ILoveYou: "🤟 Thanks / love",
+    Closed_Fist: "(pause / send line in spell mode)",
+    Open_Palm: "(space in spell mode)",
+    Pointing_Up: "Up / one",
+    Thumb_Down: "No",
+    Thumb_Up: "Yes / OK",
+    Victory: "Peace / V",
+    ILoveYou: "Thanks / love",
   };
 
   /** fingerpose built-in gesture names (underscore) */
   const FINGERPOSE_PHRASES = {
-    victory: "✌️ Peace / V",
-    thumbs_up: "👍 Yes / OK",
+    victory: "Peace / V",
+    thumbs_up: "Yes / OK",
   };
 
   /** ASL letter spell names are single letters A–Z from GestureDescription.name */
