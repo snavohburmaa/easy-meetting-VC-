@@ -1,344 +1,218 @@
 /**
  * Attention Detection Module v2
- * Scoring-based system with per-frame numeric scores (0–1).
- *
- * - 10–15 checks/second
- * - Eye score: open=1, closed=0 (weight 0.6)
- * - Head score: forward=1, slight turn=0.5, away/down=0 (weight 0.4)
- * - Sliding window smoothing (last 2–3 sec)
- * - Blink ignore (<300ms), grace time (<2s looking away)
- * - Per-user calibration (first 3–5 sec)
- * - Confidence threshold (skip low-confidence frames)
- *
- * Privacy: All inference runs in-browser. Only score + status sent over network.
+ * Scoring-based: each frame gets a numeric score 0–1.
+ * Eye score (weight 0.6) + Head score (weight 0.4)
+ * Smoothed over sliding window, emitted every 1s.
  */
 (function () {
   "use strict";
 
-  /* ── Constants ─────────────────────────────────────────────── */
-  const DETECT_INTERVAL_MS = 80;        // ~12 fps (10–15 checks/sec)
-  const EMIT_INTERVAL_MS = 1000;        // send to server every 1s
-  const WINDOW_SIZE = 30;               // sliding window: ~2.5 sec at 12fps
-  const EAR_CLOSED = 0.19;             // EAR below this = eyes closed
-  const BLINK_IGNORE_MS = 300;          // blinks shorter than this → still score 1
-  const GRACE_MS = 2000;                // looking away < 2s → still active
-  const CALIBRATION_FRAMES = 40;        // ~3 sec at 12fps for calibration
-  const CONFIDENCE_MIN = 0.5;           // skip frame if face detection confidence below this
+  /* ── Config ──────────────────────────────────────────────── */
+  const DETECT_INTERVAL_MS = 200;       // 5 fps (realistic for TF.js FaceMesh)
+  const EMIT_INTERVAL_MS = 1000;        // emit to server every 1s
+  const WINDOW_SECONDS = 3;             // sliding window: 3 seconds
+  const EAR_CLOSED = 0.17;             // EAR below = eyes closed
+  const BLINK_IGNORE_MS = 350;          // ignore blinks shorter than this
+  const GRACE_MS = 2000;                // head away <2s = still active
+  const CALIBRATION_SEC = 3;            // calibrate for first 3 seconds
 
-  /* Weight */
   const EYE_WEIGHT = 0.6;
   const HEAD_WEIGHT = 0.4;
 
-  /* Head pose thresholds (degrees — applied relative to calibrated baseline) */
-  const YAW_SLIGHT = 15;               // slight turn
-  const YAW_AWAY = 35;                 // fully looking away
-  const PITCH_DOWN = 25;               // head down
-  const PITCH_AWAY = 35;               // extreme up/down
+  // Head thresholds (relative to calibrated baseline)
+  const YAW_SLIGHT = 18;
+  const YAW_AWAY = 40;
+  const PITCH_DOWN = 28;
+  const PITCH_AWAY = 40;
 
-  /* ── MediaPipe Face Landmark indices ───────────────────────── */
+  /* ── Landmark indices ──────────────────────────────────────── */
   const LEFT_EYE = [362, 385, 387, 263, 373, 380];
   const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-  const LEFT_IRIS = 468;
-  const RIGHT_IRIS = 473;
   const NOSE_TIP = 1;
   const CHIN = 152;
   const LEFT_EYE_CORNER = 263;
   const RIGHT_EYE_CORNER = 33;
-  const LEFT_MOUTH = 287;
-  const RIGHT_MOUTH = 57;
 
   /* ── State ─────────────────────────────────────────────────── */
   let detector = null;
   let running = false;
   let videoEl = null;
   let socketRef = null;
-  let rafId = null;
-  let lastDetectTime = 0;
+  let loopTimer = null;
   let lastEmitTime = 0;
   let onStatusChange = null;
+  let detecting = false; // prevent overlapping detect calls
 
-  // Sliding window of { score, ts }
-  const scoreWindow = [];
-
-  // Blink tracking
-  let eyesClosedSince = 0;             // timestamp when eyes first closed, 0 = open
-
-  // Grace time tracking
-  let headAwaySince = 0;               // timestamp when head first turned away, 0 = forward
-  let lastGoodHeadScore = 1;           // last head score before grace period
+  const scoreWindow = [];   // { score, ts } — ts is Date.now()
+  let eyesClosedSince = 0;
+  let headAwaySince = 0;
+  let lastGoodHeadScore = 1;
 
   // Calibration
   let calibrating = true;
-  let calibrationData = [];            // { yaw, pitch } samples
-  let baselineYaw = 0;
-  let baselinePitch = 0;
+  let calSamples = [];
+  let baseYaw = 0;
+  let basePitch = 0;
 
-  // Current state
   let currentScore = 0;
   let currentStatus = "Unknown";
+  let _dbg = 0;
 
-  /* ── Math helpers ──────────────────────────────────────────── */
+  /* ── Math ──────────────────────────────────────────────────── */
   function dist(a, b) {
-    const dx = a[0] - b[0];
-    const dy = a[1] - b[1];
-    return Math.sqrt(dx * dx + dy * dy);
+    return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2);
   }
 
-  function computeEAR(eyePoints) {
-    const v1 = dist(eyePoints[1], eyePoints[5]);
-    const v2 = dist(eyePoints[2], eyePoints[4]);
-    const h = dist(eyePoints[0], eyePoints[3]);
-    if (h < 1e-6) return 0;
-    return (v1 + v2) / (2.0 * h);
+  function computeEAR(pts) {
+    const v1 = dist(pts[1], pts[5]);
+    const v2 = dist(pts[2], pts[4]);
+    const h = dist(pts[0], pts[3]);
+    return h < 1e-6 ? 0 : (v1 + v2) / (2 * h);
   }
 
-  function estimateHeadPose(kp) {
-    const nose = kp[NOSE_TIP];
-    const chin = kp[CHIN];
-    const leftEye = kp[LEFT_EYE_CORNER];
-    const rightEye = kp[RIGHT_EYE_CORNER];
-    if (!nose || !chin || !leftEye || !rightEye) return { yaw: 0, pitch: 0 };
+  function headPose(kp) {
+    const nose = kp[NOSE_TIP], chin = kp[CHIN];
+    const le = kp[LEFT_EYE_CORNER], re = kp[RIGHT_EYE_CORNER];
+    if (!nose || !chin || !le || !re) return { yaw: 0, pitch: 0 };
 
-    const leftDist = dist([nose[0], nose[1]], [leftEye[0], leftEye[1]]);
-    const rightDist = dist([nose[0], nose[1]], [rightEye[0], rightEye[1]]);
-    const total = leftDist + rightDist;
-    const yawRatio = total > 1e-6 ? (rightDist / total) : 0.5;
-    const yaw = (yawRatio - 0.5) * 100;
+    const ld = dist([nose[0], nose[1]], [le[0], le[1]]);
+    const rd = dist([nose[0], nose[1]], [re[0], re[1]]);
+    const t = ld + rd;
+    const yaw = t > 1e-6 ? ((rd / t) - 0.5) * 100 : 0;
 
-    const eyeMidY = (leftEye[1] + rightEye[1]) / 2;
-    const faceH = dist([chin[0], chin[1]], [(leftEye[0] + rightEye[0]) / 2, eyeMidY]);
-    const noseOff = nose[1] - eyeMidY;
-    const pitchRatio = faceH > 1e-6 ? (noseOff / faceH) : 0.4;
-    const pitch = (pitchRatio - 0.4) * 120;
+    const eyeY = (le[1] + re[1]) / 2;
+    const fh = dist([chin[0], chin[1]], [(le[0] + re[0]) / 2, eyeY]);
+    const nr = fh > 1e-6 ? ((nose[1] - eyeY) / fh) : 0.4;
+    const pitch = (nr - 0.4) * 120;
 
     return { yaw, pitch };
   }
 
-  /* ── Scoring functions ─────────────────────────────────────── */
-
-  /**
-   * Eye score: 1 = open, 0 = closed
-   * Blinks < 300ms are ignored (score stays 1)
-   */
-  function scoreEyes(earLeft, earRight, now) {
-    const avgEAR = (earLeft + earRight) / 2;
-    const eyesClosed = avgEAR < EAR_CLOSED;
-
-    if (eyesClosed) {
-      if (eyesClosedSince === 0) {
-        eyesClosedSince = now;
-      }
-      const closedDuration = now - eyesClosedSince;
-      // Short blink → ignore, still score 1
-      if (closedDuration < BLINK_IGNORE_MS) return 1;
-      return 0;
-    } else {
-      eyesClosedSince = 0;
-      return 1;
+  /* ── Scoring ───────────────────────────────────────────────── */
+  function scoreEyes(earL, earR, now) {
+    const avg = (earL + earR) / 2;
+    if (avg < EAR_CLOSED) {
+      if (!eyesClosedSince) eyesClosedSince = now;
+      return (now - eyesClosedSince < BLINK_IGNORE_MS) ? 1 : 0;
     }
+    eyesClosedSince = 0;
+    return 1;
   }
 
-  /**
-   * Head score: forward=1, slight turn=0.5, looking away/down=0
-   * With grace time: looking away < 2s → keep last good score
-   */
   function scoreHead(yaw, pitch, now) {
-    // Apply calibration offset
-    const adjYaw = Math.abs(yaw - baselineYaw);
-    const adjPitch = pitch - baselinePitch; // signed: positive = looking down
+    const ay = Math.abs(yaw - baseYaw);
+    const ap = pitch - basePitch;
+    let raw;
 
-    let rawScore;
-    if (adjYaw > YAW_AWAY || Math.abs(adjPitch) > PITCH_AWAY) {
-      rawScore = 0;           // fully looking away
-    } else if (adjPitch > PITCH_DOWN) {
-      rawScore = 0;           // head down
-    } else if (adjYaw > YAW_SLIGHT) {
-      rawScore = 0.5;         // slight turn
-    } else {
-      rawScore = 1;           // forward
-    }
+    if (ay > YAW_AWAY || Math.abs(ap) > PITCH_AWAY) raw = 0;
+    else if (ap > PITCH_DOWN) raw = 0;
+    else if (ay > YAW_SLIGHT) raw = 0.5;
+    else raw = 1;
 
-    // Grace time: if head just turned away, keep previous good score for 2s
-    if (rawScore < 1) {
-      if (headAwaySince === 0) {
-        headAwaySince = now;
-      }
-      const awayDuration = now - headAwaySince;
-      if (awayDuration < GRACE_MS) {
-        return lastGoodHeadScore;
-      }
-      return rawScore;
-    } else {
-      headAwaySince = 0;
-      lastGoodHeadScore = rawScore;
-      return rawScore;
+    if (raw < 1) {
+      if (!headAwaySince) headAwaySince = now;
+      if (now - headAwaySince < GRACE_MS) return lastGoodHeadScore;
+      return raw;
     }
+    headAwaySince = 0;
+    lastGoodHeadScore = raw;
+    return raw;
   }
 
-  /**
-   * Sliding window average score
-   */
-  function getSmoothedScore(now) {
-    // Remove frames older than window
-    const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
-    while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
-      scoreWindow.shift();
-    }
-    if (scoreWindow.length === 0) return 0;
-    let sum = 0;
-    for (const f of scoreWindow) sum += f.score;
-    return sum / scoreWindow.length;
+  function windowAvg(now) {
+    const cutoff = now - WINDOW_SECONDS * 1000;
+    while (scoreWindow.length && scoreWindow[0].ts < cutoff) scoreWindow.shift();
+    if (!scoreWindow.length) return 0;
+    let s = 0;
+    for (const f of scoreWindow) s += f.score;
+    return s / scoreWindow.length;
   }
 
-  /**
-   * Convert smoothed score to status string
-   */
-  function scoreToStatus(score) {
-    if (score > 0.7) return "Active";
-    if (score >= 0.4) return "Semi-active";
+  function toStatus(s) {
+    if (s > 0.7) return "Active";
+    if (s >= 0.4) return "Semi-active";
     return "Not active";
   }
 
-  /* ── Calibration ───────────────────────────────────────────── */
-  function addCalibrationSample(yaw, pitch) {
-    calibrationData.push({ yaw, pitch });
-    if (calibrationData.length >= CALIBRATION_FRAMES) {
-      // Average the samples to find baseline
-      let sumY = 0, sumP = 0;
-      for (const s of calibrationData) { sumY += s.yaw; sumP += s.pitch; }
-      baselineYaw = sumY / calibrationData.length;
-      baselinePitch = sumP / calibrationData.length;
-      calibrating = false;
-      console.log("[attention] calibrated — baseline yaw:", baselineYaw.toFixed(1),
-        "pitch:", baselinePitch.toFixed(1));
-    }
-  }
+  /* ── Detection loop (setInterval, not rAF) ─────────────────── */
+  async function tick() {
+    if (!running || !detector || !videoEl || detecting) return;
+    detecting = true;
+    const now = Date.now();
 
-  /* ── Detection loop ────────────────────────────────────────── */
-  let _lastDebug = 0;
+    try {
+      if (videoEl.readyState < 2) { detecting = false; return; }
 
-  async function detectLoop() {
-    if (!running || !detector || !videoEl) return;
+      const faces = await detector.estimateFaces(videoEl, { flipHorizontal: false });
 
-    const now = performance.now();
+      if (faces.length > 0) {
+        const kp = faces[0].keypoints.map(p => [p.x, p.y, p.z || 0]);
+        const earL = computeEAR(LEFT_EYE.map(i => kp[i]));
+        const earR = computeEAR(RIGHT_EYE.map(i => kp[i]));
+        const { yaw, pitch } = headPose(kp);
 
-    if (now - lastDetectTime >= DETECT_INTERVAL_MS) {
-      lastDetectTime = now;
-
-      try {
-        if (videoEl.readyState >= 2) {
-          const faces = await detector.estimateFaces(videoEl, { flipHorizontal: false });
-
-          if (faces.length > 0) {
-            const face = faces[0];
-
-            // Confidence threshold: skip low-confidence frames
-            const confidence = face.box ? 1 : (face.score || face.confidence || 1);
-            if (typeof confidence === "number" && confidence < CONFIDENCE_MIN) {
-              rafId = requestAnimationFrame(detectLoop);
-              return; // skip this frame
-            }
-
-            const kp = face.keypoints.map(p => [p.x, p.y, p.z || 0]);
-
-            // EAR
-            const leftEyePts = LEFT_EYE.map(i => kp[i]);
-            const rightEyePts = RIGHT_EYE.map(i => kp[i]);
-            const earLeft = computeEAR(leftEyePts);
-            const earRight = computeEAR(rightEyePts);
-
-            // Head pose
-            const { yaw, pitch } = estimateHeadPose(kp);
-
-            // Calibration phase: learn baseline
-            if (calibrating) {
-              addCalibrationSample(yaw, pitch);
-              // During calibration, assume active
-              scoreWindow.push({ score: 1, ts: now });
-            } else {
-              // Score this frame
-              const eyeScore = scoreEyes(earLeft, earRight, now);
-              const headScore = scoreHead(yaw, pitch, now);
-              const frameScore = (eyeScore * EYE_WEIGHT) + (headScore * HEAD_WEIGHT);
-
-              scoreWindow.push({ score: frameScore, ts: now });
-            }
-
-            // Trim window
-            const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
-            while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
-              scoreWindow.shift();
-            }
-
-            // Smoothed score
-            currentScore = getSmoothedScore(now);
-            currentStatus = scoreToStatus(currentScore);
-
-            // Debug log every 5 seconds
-            if (now - _lastDebug > 5000) {
-              _lastDebug = now;
-              const eyeS = scoreEyes(earLeft, earRight, now);
-              const headS = calibrating ? 1 : scoreHead(yaw, pitch, now);
-              console.log("[attention] eye:", eyeS.toFixed(2),
-                "head:", headS.toFixed(2),
-                "combined:", currentScore.toFixed(2),
-                "→", currentStatus,
-                calibrating ? "(calibrating)" : "");
-            }
-
-          } else {
-            // No face detected → score 0
-            scoreWindow.push({ score: 0, ts: now });
-            const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
-            while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
-              scoreWindow.shift();
-            }
-            currentScore = getSmoothedScore(now);
-            currentStatus = scoreToStatus(currentScore);
+        if (calibrating) {
+          calSamples.push({ yaw, pitch });
+          scoreWindow.push({ score: 1, ts: now });
+          if (calSamples.length >= Math.floor(CALIBRATION_SEC * (1000 / DETECT_INTERVAL_MS))) {
+            let sy = 0, sp = 0;
+            for (const c of calSamples) { sy += c.yaw; sp += c.pitch; }
+            baseYaw = sy / calSamples.length;
+            basePitch = sp / calSamples.length;
+            calibrating = false;
+            console.log("[attention] calibrated: yaw=" + baseYaw.toFixed(1) + " pitch=" + basePitch.toFixed(1));
           }
+        } else {
+          const es = scoreEyes(earL, earR, now);
+          const hs = scoreHead(yaw, pitch, now);
+          const fs = es * EYE_WEIGHT + hs * HEAD_WEIGHT;
+          scoreWindow.push({ score: fs, ts: now });
 
-          // Notify callback
-          if (onStatusChange) onStatusChange(currentStatus, currentScore);
-
-          // Emit to server at throttled rate
-          if (socketRef && socketRef.connected && (now - lastEmitTime >= EMIT_INTERVAL_MS)) {
-            lastEmitTime = now;
-            socketRef.emit("attention:status", {
-              status: currentStatus,
-              score: Math.round(currentScore * 100) / 100, // 2 decimal places
-            });
+          // Debug every 5s
+          if (now - _dbg > 5000) {
+            _dbg = now;
+            console.log("[attention] ear:" + ((earL + earR) / 2).toFixed(3),
+              "eye:" + es, "head:" + hs.toFixed(1),
+              "score:" + currentScore.toFixed(2), "→", currentStatus);
           }
         }
-      } catch (err) {
-        console.warn("[attention] detection error:", err.message);
+      } else {
+        // No face → 0
+        scoreWindow.push({ score: 0, ts: now });
       }
-    }
 
-    rafId = requestAnimationFrame(detectLoop);
+      currentScore = windowAvg(now);
+      currentStatus = toStatus(currentScore);
+      if (onStatusChange) onStatusChange(currentStatus, currentScore);
+
+      // Emit to server
+      if (socketRef && socketRef.connected && now - lastEmitTime >= EMIT_INTERVAL_MS) {
+        lastEmitTime = now;
+        socketRef.emit("attention:status", {
+          status: currentStatus,
+          score: Math.round(currentScore * 100) / 100,
+        });
+      }
+    } catch (err) {
+      console.warn("[attention] error:", err.message);
+    }
+    detecting = false;
   }
 
   /* ── Public API ────────────────────────────────────────────── */
   async function start(video, socket, statusCallback) {
     if (running) return;
-
     videoEl = video;
     socketRef = socket;
     onStatusChange = statusCallback || null;
     scoreWindow.length = 0;
-    calibrationData = [];
+    calSamples = [];
     calibrating = true;
-    baselineYaw = 0;
-    baselinePitch = 0;
-    eyesClosedSince = 0;
-    headAwaySince = 0;
-    lastGoodHeadScore = 1;
-    currentScore = 0;
-    currentStatus = "Unknown";
-    lastDetectTime = 0;
-    lastEmitTime = 0;
-    _lastDebug = 0;
+    baseYaw = 0; basePitch = 0;
+    eyesClosedSince = 0; headAwaySince = 0; lastGoodHeadScore = 1;
+    currentScore = 0; currentStatus = "Unknown";
+    lastEmitTime = 0; _dbg = 0; detecting = false;
 
-    // Dynamically load TF.js and face landmarks model
     if (!window.tf) {
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.22.0/dist/tf-core.min.js");
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.22.0/dist/tf-converter.min.js");
@@ -346,34 +220,27 @@
       await tf.setBackend("webgl");
       await tf.ready();
     }
-
     if (!window.faceLandmarksDetection) {
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5/dist/face-landmarks-detection.min.js");
     }
 
-    const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
-    detector = await faceLandmarksDetection.createDetector(model, {
-      runtime: "tfjs",
-      refineLandmarks: true,
-      maxFaces: 1,
-    });
+    detector = await faceLandmarksDetection.createDetector(
+      faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+      { runtime: "tfjs", refineLandmarks: true, maxFaces: 1 }
+    );
 
     running = true;
-    rafId = requestAnimationFrame(detectLoop);
-    console.log("[attention] started (12fps, calibrating first 3s...)");
+    loopTimer = setInterval(tick, DETECT_INTERVAL_MS);
+    console.log("[attention] started (5fps, calibrating " + CALIBRATION_SEC + "s)");
   }
 
   function stop() {
     running = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (detector) { detector.dispose(); detector = null; }
-    videoEl = null;
-    socketRef = null;
-    onStatusChange = null;
-    scoreWindow.length = 0;
-    calibrationData = [];
-    currentScore = 0;
-    currentStatus = "Unknown";
+    if (loopTimer) { clearInterval(loopTimer); loopTimer = null; }
+    if (detector) { try { detector.dispose(); } catch (_) {} detector = null; }
+    videoEl = null; socketRef = null; onStatusChange = null;
+    scoreWindow.length = 0; calSamples = [];
+    currentScore = 0; currentStatus = "Unknown";
     console.log("[attention] stopped");
   }
 
@@ -381,18 +248,15 @@
   function getStatus() { return currentStatus; }
   function getScore() { return currentScore; }
 
-  /* ── Script loader ─────────────────────────────────────────── */
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       if (document.querySelector('script[src="' + src + '"]')) return resolve();
       const s = document.createElement("script");
-      s.src = src;
-      s.onload = resolve;
+      s.src = src; s.onload = resolve;
       s.onerror = () => reject(new Error("Failed to load: " + src));
       document.head.appendChild(s);
     });
   }
 
-  /* ── Export ─────────────────────────────────────────────────── */
   window.AttentionDetection = { start, stop, isRunning, getStatus, getScore };
 })();
