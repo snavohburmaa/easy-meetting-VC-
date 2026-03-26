@@ -18,17 +18,14 @@ import * as roomDocuments from "./lib/roomDocuments.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 import * as meetingDoc from "./lib/meetingDocumentPipeline.js";
 import * as meetingTranscript from "./lib/meetingTranscript.js";
-import { generateSummary, askAboutMeeting, getSummary } from "./lib/meetingSummary.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getKey, markLimited, isRateLimitError } from "./lib/geminiKeys.js";
+import { generateSummary, regenerateSummary, askAboutMeeting, getSummary } from "./lib/meetingSummary.js";
+import * as meetingHistory from "./lib/meetingHistory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
-const LT_URL = process.env.LIBRETRANSLATE_URL || "https://libretranslate.com";
-const LT_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
 
 /* Ensure uploads directory exists at startup */
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads"));
@@ -113,91 +110,17 @@ app.get("/api/qr/:code", async (req, res) => {
   }
 });
 
-/** Language code to name map for Gemini prompt */
-const LANG_NAMES = {
-  en:"English",my:"Myanmar",th:"Thai",ja:"Japanese",zh:"Chinese",ko:"Korean",
-  fr:"French",de:"German",es:"Spanish",pt:"Portuguese",ru:"Russian",hi:"Hindi",
-  ar:"Arabic",vi:"Vietnamese",id:"Indonesian",tr:"Turkish",it:"Italian",
-  nl:"Dutch",pl:"Polish",uk:"Ukrainian",sv:"Swedish",ta:"Tamil",bn:"Bengali",
-  ms:"Malay",tl:"Filipino",
-};
-
-/**
- * Batch-translate text into multiple target languages in a single Gemini call.
- * @param {string} text - Source text
- * @param {string} sourceLang - Source language code (e.g. "en")
- * @param {string[]} targetLangs - Array of target language codes (e.g. ["th", "ja"])
- * @returns {Promise<Object<string, string>>} Map of langCode -> translatedText
- */
-async function batchTranslate(text, sourceLang, targetLangs) {
-  // Filter out source language and deduplicate
-  const unique = [...new Set(targetLangs.filter(l => l !== sourceLang))];
-  if (!unique.length) return {};
-
-  // If only one target, use a simple prompt
-  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const targets = unique.map(l => `"${l}": "${LANG_NAMES[l] || l}"`).join(", ");
-  const sourceName = LANG_NAMES[sourceLang] || sourceLang;
-
-  const prompt = unique.length === 1
-    ? `Translate this ${sourceName} text to ${LANG_NAMES[unique[0]] || unique[0]}. Return ONLY the translated text, nothing else.\n\n${text}`
-    : `Translate this ${sourceName} text into the following languages. Return ONLY a JSON object mapping language code to translated text, no markdown fences.\nTarget languages: {${targets}}\n\nText: ${text}`;
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const apiKey = getKey();
-    if (!apiKey) return {};
-    try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      const raw = result.response.text().trim();
-
-      if (unique.length === 1) {
-        return { [unique[0]]: raw };
-      }
-      // Parse JSON
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-      return JSON.parse(cleaned);
-    } catch (err) {
-      if (isRateLimitError(err)) { markLimited(apiKey, 60000); continue; }
-      console.error("[translate] Gemini error:", err.message || err);
-      return {};
-    }
-  }
-  return {};
-}
-
-/** POST /api/translate { text, source, target } -> { translated } */
-app.post("/api/translate", async (req, res) => {
-  const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 1000) : "";
-  const source = typeof req.body?.source === "string" ? req.body.source.trim().slice(0, 10) : "auto";
-  const target = typeof req.body?.target === "string" ? req.body.target.trim().slice(0, 10) : "";
-  if (!text || !target) return res.status(400).json({ error: "text and target required" });
-  if (source === target) return res.json({ translated: text });
-
-  const targetName = LANG_NAMES[target] || target;
-  const prompt = `Translate the following text to ${targetName}. Return ONLY the translated text, nothing else.\n\n${text}`;
-  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-
-  // Try up to 3 different API keys from the pool
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const apiKey = getKey();
-    if (!apiKey) return res.status(503).json({ error: "No GEMINI_API_KEY configured" });
-    try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      const translated = result.response.text().trim();
-      return res.json({ translated });
-    } catch (err) {
-      if (isRateLimitError(err)) {
-        markLimited(apiKey, 60000);
-        continue; // try next key
-      }
-      return res.status(502).json({ error: "Translation failed", message: (err.message || "").slice(0, 200) });
-    }
-  }
-  return res.status(429).json({ error: "All API keys rate limited. Try again shortly." });
+/** PATCH /api/meeting-summary/:code/attention — store attention stats (host-only, called once) */
+app.patch("/api/meeting-summary/:code/attention", (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+  const attention = Array.isArray(req.body?.attention) ? req.body.attention : [];
+  data.attentionStats = attention.map(a => ({
+    name: typeof a.name === "string" ? a.name.slice(0, 80) : "Unknown",
+    activePercent: typeof a.activePercent === "number" ? Math.max(0, Math.min(100, Math.round(a.activePercent))) : 0,
+  }));
+  res.json({ ok: true });
 });
 
 /** GET /api/meeting-summary/:code — retrieve generated summary */
@@ -206,7 +129,30 @@ app.get("/api/meeting-summary/:code", (req, res) => {
   const data = getSummary(code);
   if (!data) return res.status(404).json({ error: "Summary not found or expired" });
   const { rawTranscript, ...safe } = data;
+  // Only include attentionStats if requester is the host (indicated by query param)
+  // The host flag is set client-side — this is acceptable since the data is ephemeral
+  if (req.query.includeAttention !== "true") {
+    delete safe.attentionStats;
+  }
   res.json(safe);
+});
+
+/** POST /api/meeting-summary/:code/regenerate — retry AI summary generation */
+app.post("/api/meeting-summary/:code/regenerate", async (req, res) => {
+  const code = (req.params.code || "").trim().toUpperCase();
+  const data = getSummary(code);
+  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
+  try {
+    const result = await regenerateSummary(code);
+    if (!result) return res.status(500).json({ error: "Regeneration failed" });
+    const { rawTranscript, ...safe } = result;
+    if (req.query.includeAttention !== "true") {
+      delete safe.attentionStats;
+    }
+    res.json(safe);
+  } catch (err) {
+    res.status(502).json({ error: "AI failed", message: (err.message || "").slice(0, 200) });
+  }
 });
 
 /** POST /api/meeting-summary/:code/ask — ask AI about the meeting */
@@ -224,13 +170,18 @@ app.post("/api/meeting-summary/:code/ask", async (req, res) => {
   }
 });
 
-/** PATCH /api/meeting-summary/:code/name — set meeting name */
+/** PATCH /api/meeting-summary/:code/name — set meeting name (in-memory + Supabase) */
 app.patch("/api/meeting-summary/:code/name", (req, res) => {
   const code = (req.params.code || "").trim().toUpperCase();
-  const data = getSummary(code);
-  if (!data) return res.status(404).json({ error: "Summary not found or expired" });
   const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
-  data.meetingName = name;
+  // Always store as pending so it's applied when saveMeeting runs
+  if (name) pendingMeetingNames.set(code, name);
+  const data = getSummary(code);
+  if (data) {
+    data.meetingName = name;
+    // If summary already exists in Supabase, update there too
+    meetingHistory.updateMeetingNameByRoomCode(code, name).catch(() => {});
+  }
   res.json({ ok: true });
 });
 
@@ -285,6 +236,30 @@ app.get("/api/meeting-summary/:code/export", (req, res) => {
     const fmtD = (j, l) => { const m = Math.round(((l || Date.now()) - j) / 60000); return m < 1 ? "<1 min" : m + " min"; };
     data.attendeeDetails.forEach((a) => {
       c += `    \u25CF  ${a.name.padEnd(18)}  Joined: ${fmtT(a.joinedAt)}   Left: ${fmtT(a.leftAt)}   Duration: ${fmtD(a.joinedAt, a.leftAt)}\n`;
+    });
+    c += "\n";
+  }
+
+  // ── Participant Contributions ──
+  if (data.participantSummaries && data.participantSummaries.length) {
+    c += `\n  \u25B8 PARTICIPANT CONTRIBUTIONS\n`;
+    c += `  ${hr()}\n`;
+    data.participantSummaries.forEach((p) => {
+      c += `    \u25CF  ${p.name}\n`;
+      if (p.spoken && p.spoken !== "No contributions") c += `       Voice: ${p.spoken}\n`;
+      if (p.chatted && p.chatted !== "No contributions") c += `       Chat:  ${p.chatted}\n`;
+      if ((!p.spoken || p.spoken === "No contributions") && (!p.chatted || p.chatted === "No contributions")) c += `       No voice or chat contributions\n`;
+      c += "\n";
+    });
+  }
+
+  // ── Attention Stats ──
+  if (data.attentionStats && data.attentionStats.length) {
+    c += `\n  \u25B8 PARTICIPANT ATTENTION\n`;
+    c += `  ${hr()}\n`;
+    data.attentionStats.forEach((a) => {
+      const bar = "\u2588".repeat(Math.round(a.activePercent / 5)) + "\u2591".repeat(20 - Math.round(a.activePercent / 5));
+      c += `    \u25CF  ${a.name.padEnd(18)}  ${bar}  ${String(a.activePercent).padStart(3)}% active\n`;
     });
     c += "\n";
   }
@@ -357,7 +332,7 @@ app.get("/api/meeting-summary/:code/export", (req, res) => {
 
   // ── Footer ──
   c += dblHr() + "\n";
-  c += center("Generated by Ez Meeting") + "\n";
+  c += center("Generated by Meet") + "\n";
   c += center(dateStr) + "\n";
 
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -365,6 +340,127 @@ app.get("/api/meeting-summary/:code/export", (req, res) => {
   const fileName = safeName ? `${safeName}.txt` : `meeting-summary-${code}.txt`;
   res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
   res.send(c);
+});
+
+/** Helper: extract user from JWT token in Authorization header */
+function authFromHeader(req) {
+  try {
+    const hdr = req.headers.authorization || "";
+    if (hdr.startsWith("Bearer ")) return verifyToken(hdr.slice(7));
+  } catch {}
+  return null;
+}
+
+/** GET /api/recent-meetings — list recent meetings for the authenticated user */
+app.get("/api/recent-meetings", async (req, res) => {
+  const user = authFromHeader(req);
+  if (!user || !user.email) return res.status(401).json({ error: "auth_required" });
+  try {
+    const meetings = await meetingHistory.getRecentMeetings(user.email, 20);
+    res.json({ meetings });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch meetings", message: (err.message || "").slice(0, 200) });
+  }
+});
+
+/** GET /api/meeting-history/:id — get full meeting details from Supabase */
+app.get("/api/meeting-history/:id", async (req, res) => {
+  const user = authFromHeader(req);
+  if (!user || !user.email) return res.status(401).json({ error: "auth_required" });
+  const id = (req.params.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+
+  const allowed = await meetingHistory.isParticipant(id, user.email);
+  if (!allowed) return res.status(403).json({ error: "not_participant" });
+
+  const data = await meetingHistory.getMeetingById(id);
+  if (!data) return res.status(404).json({ error: "not_found" });
+  res.json(data);
+});
+
+/** POST /api/meeting-history/:id/ask — ask AI about a past meeting from Supabase */
+app.post("/api/meeting-history/:id/ask", async (req, res) => {
+  const user = authFromHeader(req);
+  if (!user || !user.email) return res.status(401).json({ error: "auth_required" });
+  const id = (req.params.id || "").trim();
+  const question = typeof req.body?.question === "string" ? req.body.question.trim().slice(0, 2000) : "";
+  if (!question) return res.status(400).json({ error: "question required" });
+
+  const allowed = await meetingHistory.isParticipant(id, user.email);
+  if (!allowed) return res.status(403).json({ error: "not_participant" });
+
+  const data = await meetingHistory.getMeetingById(id);
+  if (!data) return res.status(404).json({ error: "not_found" });
+
+  // Use DeepSeek via the same helper used for in-memory summaries
+  const { getKey, isRateLimitError, markLimited } = await import("./lib/geminiKeys.js");
+  const DEEPSEEK_BASE = "https://api.deepseek.com";
+  const prompt = `You are an AI assistant that answers questions about a meeting. Use the transcript and summary below to answer accurately.
+
+=== Meeting Summary ===
+${data.summary}
+
+=== Full Transcript ===
+${(data.rawTranscript || "").slice(0, 100000)}
+
+=== User Question ===
+${question}
+
+Answer the question based only on the meeting content. Be concise and helpful. If the answer isn't in the transcript, say so.`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const apiKey = getKey();
+    if (!apiKey) return res.status(503).json({ error: "No API key configured" });
+    try {
+      const model = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+      const aiRes = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0.7 }),
+      });
+      if (!aiRes.ok) {
+        const errText = await aiRes.text().catch(() => "");
+        const err = new Error(`DeepSeek ${aiRes.status}: ${errText.slice(0, 300)}`);
+        err.status = aiRes.status;
+        throw err;
+      }
+      const aiData = await aiRes.json();
+      const answer = aiData.choices?.[0]?.message?.content?.trim() || "No answer.";
+      return res.json({ answer });
+    } catch (err) {
+      if (isRateLimitError(err)) { markLimited(apiKey, 60000); continue; }
+      return res.status(502).json({ error: "AI failed", message: (err.message || "").slice(0, 200) });
+    }
+  }
+  res.status(502).json({ error: "All API keys rate limited" });
+});
+
+/** PATCH /api/meeting-history/:id/name — rename a past meeting */
+app.patch("/api/meeting-history/:id/name", async (req, res) => {
+  const user = authFromHeader(req);
+  if (!user || !user.email) return res.status(401).json({ error: "auth_required" });
+  const id = (req.params.id || "").trim();
+  const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+
+  const allowed = await meetingHistory.isParticipant(id, user.email);
+  if (!allowed) return res.status(403).json({ error: "not_participant" });
+
+  await meetingHistory.updateMeetingName(id, name);
+  res.json({ ok: true });
+});
+
+/** DELETE /api/meeting-history/:id — delete a past meeting */
+app.delete("/api/meeting-history/:id", async (req, res) => {
+  const user = authFromHeader(req);
+  if (!user || !user.email) return res.status(401).json({ error: "auth_required" });
+  const id = (req.params.id || "").trim();
+
+  const allowed = await meetingHistory.isParticipant(id, user.email);
+  if (!allowed) return res.status(403).json({ error: "not_participant" });
+
+  const ok = await meetingHistory.deleteMeeting(id);
+  if (!ok) return res.status(500).json({ error: "delete_failed" });
+  res.json({ ok: true });
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -412,10 +508,39 @@ async function clearRoomSockets(code) {
   }
 }
 
+/** Pending meeting names: roomCode -> name (set before summary generation finishes) */
+const pendingMeetingNames = new Map();
+
+/** Per-room attention tracking: roomCode -> Map<socketId, { name, activeFrames, totalFrames }> */
+const attentionStats = new Map();
+
+function initAttention(code) {
+  if (!attentionStats.has(code)) attentionStats.set(code, new Map());
+}
+function recordAttention(code, socketId, name, status) {
+  const room = attentionStats.get(code);
+  if (!room) return;
+  if (!room.has(socketId)) room.set(socketId, { name, activeFrames: 0, totalFrames: 0 });
+  const entry = room.get(socketId);
+  entry.totalFrames++;
+  if (status === "Active") entry.activeFrames++;
+}
+function getAttentionSummary(code) {
+  const room = attentionStats.get(code);
+  if (!room) return [];
+  const results = [];
+  for (const [, entry] of room) {
+    const pct = entry.totalFrames > 0 ? Math.round((entry.activeFrames / entry.totalFrames) * 100) : 0;
+    results.push({ name: entry.name, activePercent: pct, totalFrames: entry.totalFrames });
+  }
+  return results;
+}
+function clearAttention(code) {
+  attentionStats.delete(code);
+}
+
 io.on("connection", (socket) => {
   socket.data.roomCode = null;
-  socket.data.speakLang = "en";
-  socket.data.subtitleLang = "en";
 
   socket.on("room:create", (payload, ack) => {
     // Support both (ack) and (payload, ack) signatures
@@ -424,14 +549,13 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ error: "already_in_room" });
       return;
     }
-    socket.data.speakLang = typeof payload?.speakLang === "string" ? payload.speakLang.slice(0, 10) : "en";
-    socket.data.subtitleLang = typeof payload?.subtitleLang === "string" ? payload.subtitleLang.slice(0, 10) : "en";
     const code = rooms.createRoom(socket.id);
     socket.join(code);
     socket.data.roomCode = code;
     rooms.setParticipantMeta(code, socket.id, socket.user);
     meetingTranscript.initRoom(code);
     meetingTranscript.addAttendee(code, socket.user.name);
+    initAttention(code);
     const peers = rooms.listPeers(code, socket.id);
     if (typeof ack === "function") {
       ack({
@@ -458,13 +582,12 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ error: "not_found" });
       return;
     }
-    socket.data.speakLang = typeof payload?.speakLang === "string" ? payload.speakLang.slice(0, 10) : "en";
-    socket.data.subtitleLang = typeof payload?.subtitleLang === "string" ? payload.subtitleLang.slice(0, 10) : "en";
     socket.join(codeRaw);
     socket.data.roomCode = codeRaw;
     rooms.setParticipantMeta(codeRaw, socket.id, socket.user);
     meetingTranscript.initRoom(codeRaw);
     meetingTranscript.addAttendee(codeRaw, socket.user.name);
+    initAttention(codeRaw);
     const peerList = rooms.listPeers(codeRaw, socket.id);
     const host = rooms.isHost(codeRaw, socket.id);
     if (typeof ack === "function") {
@@ -561,8 +684,8 @@ io.on("connection", (socket) => {
     });
   });
 
-  /* ── Real-time voice-to-text captions with translation ── */
-  socket.on("caption:voice", async (payload) => {
+  /* ── Real-time voice-to-text captions (English only) ── */
+  socket.on("caption:voice", (payload) => {
     const code = socket.data.roomCode;
     if (!code) return;
     const now = Date.now();
@@ -573,56 +696,19 @@ io.on("connection", (socket) => {
 
     const text = typeof payload?.text === "string" ? payload.text.slice(0, 1000) : "";
     const isFinal = !!payload?.isFinal;
-    const senderLang = socket.data.speakLang || "en";
 
-    // For interim results, relay immediately without translation
-    if (!isFinal || !text.trim()) {
-      socket.to(code).emit("caption:voice", {
-        text, isFinal, lang: senderLang, at: now,
-        from: socket.user.name, socketId: socket.id,
+    // Store final captions in transcript
+    if (isFinal && text.trim()) {
+      meetingTranscript.addEntry(code, {
+        at: now, from: socket.user.name, text: text.trim(), type: "voice",
       });
-      return;
     }
 
-    // Final result — collect target languages from all participants in the room
-    const roomSockets = await io.in(code).fetchSockets();
-    const targetLangs = new Set();
-    for (const s of roomSockets) {
-      if (s.id !== socket.id) targetLangs.add(s.data.subtitleLang || "en");
-    }
-    // Always include English for the meeting summary/transcript
-    targetLangs.add("en");
-
-    // Translate via Gemini (skip if sender speaks the only needed language)
-    let translations = {};
-    const needsTranslation = [...targetLangs].some(l => l !== senderLang);
-    if (needsTranslation) {
-      translations = await batchTranslate(text.trim(), senderLang, [...targetLangs]);
-    }
-
-    // Store English version in transcript for summary
-    const englishText = senderLang === "en" ? text.trim() : (translations["en"] || text.trim());
-    meetingTranscript.addEntry(code, {
-      at: now, from: socket.user.name, text: englishText, type: "voice",
+    // Relay to all other participants
+    socket.to(code).emit("caption:voice", {
+      text, isFinal, at: now,
+      from: socket.user.name, socketId: socket.id,
     });
-
-    // Emit personalized translated captions to each participant
-    for (const s of roomSockets) {
-      if (s.id === socket.id) continue;
-      const theirLang = s.data.subtitleLang || "en";
-      const translatedText = (theirLang === senderLang)
-        ? text.trim()
-        : (translations[theirLang] || text.trim());
-      s.emit("caption:voice", {
-        text: text.trim(),
-        translatedText,
-        isFinal: true,
-        lang: senderLang,
-        at: now,
-        from: socket.user.name,
-        socketId: socket.id,
-      });
-    }
   });
 
   // ── Screen share permission flow ──
@@ -652,9 +738,29 @@ io.on("connection", (socket) => {
     io.to(targetId).emit(approved ? "screen:approved" : "screen:denied");
   });
 
+  /* ── Attention status from participants (host is excluded) ── */
+  socket.on("attention:status", (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const status = typeof payload?.status === "string" ? payload.status.slice(0, 20) : "";
+    if (!status) return;
+    const room = rooms.getRoom(code);
+    if (!room) return;
+    // Skip host — only track participants
+    if (room.hostId === socket.id) return;
+    recordAttention(code, socket.id, socket.user.name, status);
+    io.to(room.hostId).emit("attention:update", {
+      peerId: socket.id,
+      name: socket.user.name,
+      status,
+    });
+  });
+
   socket.on("room:end", async () => {
     const code = socket.data.roomCode;
     if (!code) return;
+    // Capture participant metadata before room is deleted
+    const { hostEmail, participants: participantsMeta } = rooms.getParticipantsMeta(code);
     if (!rooms.endRoomByHost(code, socket.id)) return;
     roomDocuments.clearRoom(code);
     // Generate summary before notifying clients
@@ -662,8 +768,15 @@ io.on("connection", (socket) => {
     const transcript = meetingTranscript.getTranscript(code);
     if (transcript && transcript.entries.length > 0) {
       summaryCode = code;
-      generateSummary(code).then(() => {
+      generateSummary(code).then(async (summaryData) => {
         meetingTranscript.deleteTranscript(code);
+        if (summaryData) {
+          // Apply pending name (user may have named it while AI was generating)
+          const pending = pendingMeetingNames.get(code);
+          if (pending) { summaryData.meetingName = pending; pendingMeetingNames.delete(code); }
+          meetingHistory.saveMeeting(summaryData, hostEmail, participantsMeta).catch((e) =>
+            console.error("[meeting-history] save error:", e.message || e));
+        }
       }).catch((err) => {
         console.error("[meeting-summary] generation failed:", err);
         meetingTranscript.deleteTranscript(code);
@@ -671,7 +784,9 @@ io.on("connection", (socket) => {
     } else {
       meetingTranscript.deleteTranscript(code);
     }
-    io.to(code).emit("room:ended", { reason: "host_ended", summaryCode });
+    const attentionData = getAttentionSummary(code);
+    io.to(code).emit("room:ended", { reason: "host_ended", summaryCode, attentionData });
+    clearAttention(code);
     await clearRoomSockets(code);
   });
 
@@ -698,6 +813,8 @@ async function leaveSocketRoom(socket) {
   const code = socket.data.roomCode;
   if (!code) return;
   meetingTranscript.markAttendeeLeft(code, socket.user.name);
+  // Capture participant metadata before room might be deleted
+  const { hostEmail, participants: participantsMeta } = rooms.getParticipantsMeta(code);
   const result = rooms.removeParticipant(socket.id);
   socket.data.roomCode = null;
   if (!result) {
@@ -710,18 +827,27 @@ async function leaveSocketRoom(socket) {
     const transcript = meetingTranscript.getTranscript(result.code);
     if (transcript && transcript.entries.length > 0) {
       summaryCode = result.code;
-      generateSummary(result.code).then(() => {
+      generateSummary(result.code).then(async (summaryData) => {
         meetingTranscript.deleteTranscript(result.code);
+        if (summaryData) {
+          const pending = pendingMeetingNames.get(result.code);
+          if (pending) { summaryData.meetingName = pending; pendingMeetingNames.delete(result.code); }
+          meetingHistory.saveMeeting(summaryData, hostEmail, participantsMeta).catch((e) =>
+            console.error("[meeting-history] save error:", e.message || e));
+        }
       }).catch(() => {
         meetingTranscript.deleteTranscript(result.code);
       });
     } else {
       meetingTranscript.deleteTranscript(result.code);
     }
+    const attentionData = getAttentionSummary(result.code);
     io.to(result.code).emit("room:ended", {
       reason: result.reason === "host_left" ? "host_left" : "empty",
       summaryCode,
+      attentionData,
     });
+    clearAttention(result.code);
     await clearRoomSockets(result.code);
   } else {
     socket.to(result.code).emit("peer:left", { peerId: socket.id });
@@ -744,6 +870,6 @@ server.on("error", (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Ez meeting: http://localhost:${PORT}`);
+  console.log(`Meet: http://localhost:${PORT}`);
   console.log(`Listening on ${HOST}:${PORT} (LAN ready)`);
 });

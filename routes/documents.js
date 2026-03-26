@@ -14,8 +14,8 @@ import { askAboutDocument } from "../lib/geminiDocChat.js";
 const MAX_BYTES = Number(process.env.MAX_DOCUMENT_BYTES) || 20 * 1024 * 1024;
 const MAX_EXTRACT = Number(process.env.MAX_EXTRACT_CHARS) || 80000;
 const UPLOAD_MS_GAP = Number(process.env.DOC_UPLOAD_COOLDOWN_MS) || 8000;
-const GEMINI_KEY = (process.env.GEMINI_API_KEY || "").trim();
-const MAX_GEMINI_CONTEXT = Number(process.env.MAX_GEMINI_CONTEXT_CHARS) || 120000;
+const DEEPSEEK_KEY = (process.env.DEEPSEEK_API_KEY || "").trim();
+const MAX_AI_CONTEXT = Number(process.env.MAX_DEEPSEEK_CONTEXT_CHARS) || 120000;
 const DOC_CHAT_COOLDOWN_MS = Number(process.env.DOC_CHAT_COOLDOWN_MS) || 5000;
 
 /** @type {Map<string, number>} */
@@ -209,10 +209,10 @@ export function createDocumentsRouter(io) {
       const gate = await assertInRoom(code, user);
       if (!gate.ok) return res.status(403).json({ error: gate.error });
 
-      if (!GEMINI_KEY) {
+      if (!DEEPSEEK_KEY) {
         return res.status(503).json({
-          error: "gemini_not_configured",
-          message: "Server has no GEMINI_API_KEY. Add it to .env and restart.",
+          error: "deepseek_not_configured",
+          message: "Server has no DEEPSEEK_API_KEY. Add it to .env and restart.",
         });
       }
 
@@ -247,13 +247,13 @@ export function createDocumentsRouter(io) {
       }
       docChatLastByUser.set(ck, now);
 
-      const contextText = String(doc.extractedText).slice(0, MAX_GEMINI_CONTEXT);
+      const contextText = String(doc.extractedText).slice(0, MAX_AI_CONTEXT);
 
       try {
         const answer = await askAboutDocument({
           contextText,
           question,
-          apiKey: GEMINI_KEY,
+          apiKey: DEEPSEEK_KEY,
           language,
         });
         return res.json({ answer });
@@ -261,7 +261,7 @@ export function createDocumentsRouter(io) {
         const msg = err && err.message ? err.message : String(err);
         console.error("[doc chat]", msg);
         return res.status(502).json({
-          error: "gemini_error",
+          error: "deepseek_error",
           message: msg.slice(0, 600),
         });
       }

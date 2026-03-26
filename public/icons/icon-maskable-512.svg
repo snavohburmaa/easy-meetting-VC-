@@ -1,5 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="0" fill="#6366f1"/>
-  <text x="256" y="317.44" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="194.56" fill="white">Ez</text>
-  <circle cx="348.15999999999997" cy="179.2" r="20.48" fill="#22c55e"/>
+  <rect width="512" height="512" fill="#fff"/>
+  <path d="M112 358V154l70 99 70-99v204" stroke="#7c3aed" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="352" cy="208" r="64" stroke="#7c3aed" stroke-width="19" fill="none"/>
+  <path d="M384 208l-48 30V178z" fill="#7c3aed"/>
+  <circle cx="400" cy="149" r="17" fill="#22c55e"/>
+  <rect x="96" y="394" width="320" height="7" rx="3.5" fill="#e0e0ef"/>
 </svg>

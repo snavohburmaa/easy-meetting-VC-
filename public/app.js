@@ -39,36 +39,19 @@ if ("serviceWorker" in navigator) {
   // Subtitle settings
   let subtitlesEnabled = false;
 
-  // Language preferences
-  const LANGUAGES = {
-    en: { name: "English",    speechCode: "en-US" },
-    my: { name: "Myanmar",    speechCode: "my-MM" },
-    th: { name: "Thai",       speechCode: "th-TH" },
-    ja: { name: "Japanese",   speechCode: "ja-JP" },
-    zh: { name: "Chinese",    speechCode: "zh-CN" },
-    ko: { name: "Korean",     speechCode: "ko-KR" },
-    fr: { name: "French",     speechCode: "fr-FR" },
-    de: { name: "German",     speechCode: "de-DE" },
-    es: { name: "Spanish",    speechCode: "es-ES" },
-    pt: { name: "Portuguese", speechCode: "pt-BR" },
-    ru: { name: "Russian",    speechCode: "ru-RU" },
-    hi: { name: "Hindi",      speechCode: "hi-IN" },
-    ar: { name: "Arabic",     speechCode: "ar-SA" },
-    vi: { name: "Vietnamese", speechCode: "vi-VN" },
-    id: { name: "Indonesian", speechCode: "id-ID" },
-    tr: { name: "Turkish",    speechCode: "tr-TR" },
-    it: { name: "Italian",    speechCode: "it-IT" },
-    nl: { name: "Dutch",      speechCode: "nl-NL" },
-    pl: { name: "Polish",     speechCode: "pl-PL" },
-    uk: { name: "Ukrainian",  speechCode: "uk-UA" },
-    sv: { name: "Swedish",    speechCode: "sv-SE" },
-    ta: { name: "Tamil",      speechCode: "ta-IN" },
-    bn: { name: "Bengali",    speechCode: "bn-IN" },
-    ms: { name: "Malay",      speechCode: "ms-MY" },
-    tl: { name: "Filipino",   speechCode: "fil-PH" },
-  };
-  let speakLang = "en";
-  let subtitleLang = "en";
+  // Participants & featured/spotlight state
+  const peerNames = new Map(); // peerId -> display name
+  let pinnedPeerId = null;     // currently spotlighted peer (null = auto/none)
+  let activeSpeakerId = null;  // peer currently talking (detected via audio level)
+  let featuredId = null;       // peerId in center tile ("__local__" for self, or peerId)
+
+  // Attention detection state
+  let pendingAttentionData = null; // stored from room:ended for host summary
+  const liveAttention = new Map(); // peerId -> "Active"|"Distracted"|"Eyes Closed" (host tracks all peers)
+  const peerAttentionCounts = new Map(); // peerId -> { active: 0, total: 0 } (host tracks %)
+
+  // English-only speech recognition
+  const SPEECH_LANG = "en-US";
 
   // NotebookLM conversation history (client-side only)
   let notebookConversation = [];
@@ -92,6 +75,7 @@ if ("serviceWorker" in navigator) {
   let summaryRoomCode = null;
   let summaryChatHistory = [];
   let summaryMeetingName = "";
+  let historyMeetingId = null; // set when viewing a past meeting from Supabase
 
   function showView(name) {
     ["view-login", "view-lobby", "view-meeting", "view-summary"].forEach((id) => {
@@ -299,6 +283,13 @@ if ("serviceWorker" in navigator) {
       v.style.transform = "none";
     }
 
+    // Show screen share in the featured center tile
+    showFeatured(
+      new MediaStream([screenTrack, ...localStream.getAudioTracks()]),
+      getLocalName() + " (Screen)",
+      true
+    );
+
     // Update button state
     const btn = $("btn-share-screen");
     if (btn) btn.classList.add("active");
@@ -339,6 +330,9 @@ if ("serviceWorker" in navigator) {
       v.srcObject = localStream;
       v.style.transform = facingMode === "user" ? "scaleX(-1)" : "scaleX(1)";
     }
+
+    // Hide featured center tile
+    hideFeatured();
 
     // Re-apply cam muted state
     if (camMuted && camTrack) camTrack.enabled = false;
@@ -423,6 +417,228 @@ if ("serviceWorker" in navigator) {
     if (av) av.textContent = name.charAt(0).toUpperCase();
   }
 
+  // ── Recent Meetings ────────────────────────────────────────────
+  async function loadRecentMeetings() {
+    const list = $("recent-meetings-list");
+    const empty = $("recent-meetings-empty");
+    if (!list) return;
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res = await fetch("/api/recent-meetings", {
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (!res.ok) return;
+      const { meetings } = await res.json();
+      if (!meetings || meetings.length === 0) {
+        if (empty) empty.style.display = "";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      // Remove existing cards (keep the empty placeholder)
+      list.querySelectorAll(".recent-meeting-card").forEach((el) => el.remove());
+      meetings.forEach((m) => {
+        const card = document.createElement("div");
+        card.className = "recent-meeting-card";
+        card.dataset.meetingId = m.id;
+
+        const iconClass = m.isHost ? "recent-meeting-icon--host" : "recent-meeting-icon--guest";
+        const iconStroke = m.isHost ? "var(--accent-2)" : "var(--cyan)";
+        const badgeClass = m.isHost ? "recent-meeting-badge--host" : "recent-meeting-badge--guest";
+        const badgeText = m.isHost ? "Host" : "Guest";
+        const displayName = m.meetingName || "Unnamed Meeting";
+        const dateStr = formatRecentDate(m.createdAt);
+        const dur = (m.durationMinutes || 0) + " min";
+        const attCount = (m.attendees || []).length;
+        const summarySnippet = (m.summary || "").slice(0, 80);
+
+        card.innerHTML =
+          '<div class="recent-meeting-icon ' + iconClass + '">' +
+            '<i data-lucide="' + (m.isHost ? "crown" : "user") + '" style="width:18px;height:18px;stroke:' + iconStroke + ';stroke-width:2;"></i>' +
+          '</div>' +
+          '<div class="recent-meeting-info">' +
+            '<div class="recent-meeting-name">' + escapeHtml(displayName) + '</div>' +
+            '<div class="recent-meeting-meta">' +
+              '<span><i data-lucide="calendar" style="width:11px;height:11px;stroke:currentColor;stroke-width:2;"></i> ' + dateStr + '</span>' +
+              '<span><i data-lucide="clock" style="width:11px;height:11px;stroke:currentColor;stroke-width:2;"></i> ' + dur + '</span>' +
+              '<span><i data-lucide="users" style="width:11px;height:11px;stroke:currentColor;stroke-width:2;"></i> ' + attCount + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="recent-meeting-actions">' +
+            '<button class="recent-meeting-action-btn" data-action="rename" title="Rename">' +
+              '<i data-lucide="pencil" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>' +
+            '</button>' +
+            '<button class="recent-meeting-action-btn recent-meeting-action-btn--danger" data-action="delete" title="Delete">' +
+              '<i data-lucide="trash-2" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i>' +
+            '</button>' +
+          '</div>' +
+          '<span class="recent-meeting-badge ' + badgeClass + '">' + badgeText + '</span>';
+
+        // Click card body to view, but not action buttons
+        card.addEventListener("click", (e) => {
+          if (e.target.closest(".recent-meeting-actions")) return;
+          showHistoryMeeting(m.id);
+        });
+        // Rename
+        card.querySelector('[data-action="rename"]').addEventListener("click", (e) => {
+          e.stopPropagation();
+          renameRecentMeeting(m.id, displayName);
+        });
+        // Delete
+        card.querySelector('[data-action="delete"]').addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteRecentMeeting(m.id, displayName);
+        });
+        list.appendChild(card);
+      });
+      renderIcons();
+    } catch (err) {
+      console.warn("[recent-meetings]", err);
+    }
+  }
+
+  async function renameRecentMeeting(meetingId, currentName) {
+    const newName = prompt("Rename meeting:", currentName);
+    if (newName === null) return; // cancelled
+    const token = getToken();
+    try {
+      const res = await fetch("/api/meeting-history/" + encodeURIComponent(meetingId) + "/name", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (res.ok) loadRecentMeetings();
+    } catch {}
+  }
+
+  async function deleteRecentMeeting(meetingId, meetingName) {
+    if (!confirm("Delete \"" + meetingName + "\"? This cannot be undone.")) return;
+    const token = getToken();
+    try {
+      const res = await fetch("/api/meeting-history/" + encodeURIComponent(meetingId), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (res.ok) loadRecentMeetings();
+    } catch {}
+  }
+
+  function formatRecentDate(iso) {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 86400000 && d.getDate() === now.getDate()) {
+        return "Today " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      if (d.getDate() === yesterday.getDate() && d.getMonth() === yesterday.getMonth()) {
+        return "Yesterday " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " +
+        d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch { return ""; }
+  }
+
+  async function showHistoryMeeting(meetingId) {
+    // Close the recent meetings modal if open
+    const modal = $("recent-meetings-modal");
+    if (modal) modal.classList.add("hidden");
+    historyMeetingId = meetingId;
+    summaryRoomCode = null;
+    summaryChatHistory = [];
+    showView("summary");
+    renderIcons();
+
+    const loading = $("summary-loading");
+    const cards = $("summary-cards");
+    if (loading) loading.classList.remove("hidden");
+    if (cards) cards.classList.add("hidden");
+
+    // Reset chat log
+    const chatLog = $("summary-chat-log");
+    if (chatLog) {
+      chatLog.innerHTML = '<div class="notebook-empty">' +
+        '<i data-lucide="message-circle-question" style="width:24px;height:24px;stroke:var(--text-3);stroke-width:1.5;"></i>' +
+        '<p>Ask any question about this meeting. The AI will use the full transcript to answer.</p></div>';
+    }
+
+    const token = getToken();
+    try {
+      const res = await fetch("/api/meeting-history/" + encodeURIComponent(meetingId), {
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (!res.ok) throw new Error("Failed to load meeting");
+      const data = await res.json();
+
+      if (loading) loading.classList.add("hidden");
+      if (cards) cards.classList.remove("hidden");
+
+      // Hide regenerate for history meetings
+      const regenBtn = $("btn-regenerate-summary");
+      if (regenBtn) regenBtn.classList.add("hidden");
+
+      const titleEl = $("summary-title");
+      if (titleEl) titleEl.textContent = data.meetingName || "Meeting Summary";
+
+      const meta = $("summary-meta");
+      if (meta) meta.textContent = new Date(data.createdAt).toLocaleString() + " \u00b7 Room: " + data.roomCode;
+
+      const txt = $("summary-text");
+      if (txt) txt.textContent = data.summary || "No summary available.";
+
+      const dur = $("summary-duration");
+      if (dur) dur.textContent = (data.durationMinutes || 0) + " min";
+
+      const att = $("summary-attendees");
+      if (att) {
+        const count = (data.attendees || []).length;
+        att.textContent = count + " participant" + (count !== 1 ? "s" : "");
+      }
+
+      populateAttendeePopup(data.attendeeDetails || [], data.attendees || []);
+
+      renderSummarySection("summary-topics", "summary-topics-card", data.topics, (t) =>
+        "<strong>" + escapeHtml(t.title) + "</strong><p>" + escapeHtml(t.details) + "</p>");
+      renderSummarySection("summary-assignments", "summary-assignments-card", data.assignments, (a) =>
+        '<span class="assignment-badge">' + escapeHtml(a.assignee) + "</span> " + escapeHtml(a.task));
+      renderSummarySection("summary-decisions", "summary-decisions-card", data.keyDecisions, (d) => escapeHtml(d));
+      renderContributions(data.participantSummaries);
+
+      // Attention
+      const attCard = $("summary-attention-card");
+      const attEl = $("summary-attention");
+      if (attCard && attEl && data.attentionStats && data.attentionStats.length > 0) {
+        attEl.innerHTML = "";
+        data.attentionStats.forEach((a) => {
+          const pct = typeof a.activePercent === "number" ? a.activePercent : 0;
+          const level = pct >= 70 ? "high" : pct >= 40 ? "medium" : "low";
+          const item = document.createElement("div");
+          item.className = "attention-item";
+          item.innerHTML =
+            '<span class="attention-item-name">' + escapeHtml(a.name) + '</span>' +
+            '<div class="attention-bar-wrap"><div class="attention-bar ' + level + '" style="width:' + pct + '%"></div></div>' +
+            '<span class="attention-percent">' + pct + '%</span>';
+          attEl.appendChild(item);
+        });
+        attCard.classList.remove("hidden");
+      } else if (attCard) {
+        attCard.classList.add("hidden");
+      }
+
+      renderIcons();
+    } catch (err) {
+      if (loading) loading.classList.add("hidden");
+      if (cards) {
+        cards.classList.remove("hidden");
+        const txt = $("summary-text");
+        if (txt) txt.textContent = "Could not load meeting summary.";
+      }
+      renderIcons();
+    }
+  }
+
   // ── Subtitle helpers ─────────────────────────────────────────
   function setSubtitlesEnabled(enabled) {
     subtitlesEnabled = !!enabled;
@@ -453,7 +669,6 @@ if ("serviceWorker" in navigator) {
     const sub = wrap.querySelector(".remote-sign-subtitle");
     if (!sub) return;
     let line = data.text || "";
-    if (data.translatedText) line += " · " + data.translatedText;
     const kind = data.kind && data.kind !== "gesture" ? " [" + data.kind + "]" : "";
     sub.textContent = line ? line + kind : "";
   }
@@ -664,7 +879,7 @@ if ("serviceWorker" in navigator) {
 
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = (LANGUAGES[speakLang] && LANGUAGES[speakLang].speechCode) || "en-US";
+    recognition.lang = SPEECH_LANG;
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
@@ -751,7 +966,33 @@ if ("serviceWorker" in navigator) {
     });
 
     socket.on("peer:joined", ({ peerId, name }) => { addPeer(peerId, name || "Guest"); });
-    socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); });
+    socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); liveAttention.delete(peerId); peerAttentionCounts.delete(peerId); updateAttentionMeter(); });
+
+    // Attention updates — host only receives these for remote participants
+    socket.on("attention:update", ({ peerId, name, status }) => {
+      if (!meetingState.isHost) return;
+      liveAttention.set(peerId, status);
+      // Track active percentage per peer
+      if (!peerAttentionCounts.has(peerId)) peerAttentionCounts.set(peerId, { active: 0, total: 0 });
+      const counts = peerAttentionCounts.get(peerId);
+      counts.total++;
+      if (status === "Active") counts.active++;
+      // Update badge on video tile with cumulative %
+      const wrap = document.getElementById("remote-" + peerId);
+      if (wrap) {
+        let badge = wrap.querySelector(".attention-badge");
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "attention-badge";
+          wrap.appendChild(badge);
+        }
+        const pct = counts.total > 0 ? Math.round((counts.active / counts.total) * 100) : 0;
+        const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
+        badge.setAttribute("data-status", cls);
+        badge.textContent = pct + "%";
+      }
+      updateAttentionMeter();
+    });
 
     // Screen share permission — host receives requests
     socket.on("screen:request", ({ fromId, fromName }) => {
@@ -792,7 +1033,6 @@ if ("serviceWorker" in navigator) {
           line.className = "sign-line";
           const t = new Date(data.at).toLocaleTimeString();
           let body = `${data.from}: ${data.text}`;
-          if (data.translatedText) body += ` \u2192 ${data.translatedText}`;
           if (data.kind && data.kind !== "gesture") body += ` (${data.kind})`;
           line.textContent = `[${t}] ${body}`;
           signLog.appendChild(line);
@@ -821,7 +1061,7 @@ if ("serviceWorker" in navigator) {
 
       const box = $("subtitle-box");
       if (!box || !data.isFinal) return;
-      const displayText = data.translatedText || data.text || "";
+      const displayText = data.text || "";
       if (!displayText.trim()) return;
 
       const name = data.from || "Someone";
@@ -857,15 +1097,34 @@ if ("serviceWorker" in navigator) {
 
     socket.on("doc:warn",   (d) => { if (d && d.message) meetingStatus(d.message); });
 
-    socket.on("room:ended", async ({ reason, summaryCode }) => {
+    socket.on("room:ended", async ({ reason, summaryCode, attentionData }) => {
       const labels = {
         host_ended: "Meeting ended by host.",
         host_left:  "Host left \u2014 meeting closed.",
         empty:      "Everyone left \u2014 meeting closed.",
       };
       meetingStatus(labels[reason] || "Meeting ended.");
+      const wasHost = meetingState.isHost;
+      // Save attention data before cleanup (host only)
+      pendingAttentionData = (wasHost && Array.isArray(attentionData)) ? attentionData : null;
       await cleanupMeeting();
       if (summaryCode) {
+        // If host, persist attention data to summary (retry until summary exists)
+        if (wasHost && pendingAttentionData && pendingAttentionData.length > 0) {
+          (async () => {
+            for (let i = 0; i < 15; i++) {
+              try {
+                const res = await fetch("/api/meeting-summary/" + encodeURIComponent(summaryCode) + "/attention", {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ attention: pendingAttentionData }),
+                });
+                if (res.ok) break;
+              } catch {}
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          })();
+        }
         promptMeetingName(summaryCode);
       } else {
         showView("lobby");
@@ -878,6 +1137,36 @@ if ("serviceWorker" in navigator) {
   function setupLocalVideo() {
     const v = $("local-video");
     if (v) v.srcObject = localStream;
+  }
+
+  // ── Featured tile management (only used during screen share) ──
+  function showFeatured(srcObject, label, muted) {
+    const grid = $("meeting-grid");
+    const fv = $("featured-video");
+    const fl = $("featured-label");
+    if (!grid || !fv) return;
+    fv.srcObject = srcObject;
+    fv.muted = !!muted;
+    if (fl) fl.textContent = label || "";
+    grid.classList.add("has-featured");
+    featuredId = "__screen__";
+  }
+
+  function hideFeatured() {
+    const grid = $("meeting-grid");
+    const fv = $("featured-video");
+    const fl = $("featured-label");
+    if (grid) grid.classList.remove("has-featured");
+    if (fv) fv.srcObject = null;
+    if (fl) fl.textContent = "";
+    featuredId = null;
+  }
+
+  function getLocalName() {
+    const t = getToken();
+    if (!t) return "You";
+    const payload = decodeJwtPayload(t);
+    return (payload && (payload.name || payload.email)) || "You";
   }
 
   function addPeer(peerId, remoteName) {
@@ -894,7 +1183,7 @@ if ("serviceWorker" in navigator) {
       let wrap = document.getElementById("remote-" + peerId);
       if (!wrap) {
         wrap = document.createElement("div");
-        wrap.className = "remote-wrap";
+        wrap.className = "grid-tile remote-wrap";
         wrap.id = "remote-" + peerId;
         const vid = document.createElement("video");
         vid.playsInline = true;
@@ -909,20 +1198,231 @@ if ("serviceWorker" in navigator) {
         wrap.appendChild(vid);
         wrap.appendChild(sub);
         wrap.appendChild(lab);
-        $("remote-videos").appendChild(wrap);
+        $("meeting-grid").appendChild(wrap);
       }
+      startSpeakerDetection(peerId, remoteStream);
     });
 
     peer.on("close", () => removePeer(peerId));
     peer.on("error", (e) => console.warn("peer error", peerId, e));
     peers.set(peerId, peer);
+    peerNames.set(peerId, remoteName || "Guest");
+    refreshParticipantsIfOpen();
   }
 
   function removePeer(peerId) {
     const peer = peers.get(peerId);
     if (peer) { try { peer.destroy(); } catch (_) {} peers.delete(peerId); }
+    peerNames.delete(peerId);
+    stopSpeakerDetection(peerId);
     const wrap = document.getElementById("remote-" + peerId);
     if (wrap) wrap.remove();
+    if (pinnedPeerId === peerId) closeSpotlight();
+    if (activeSpeakerId === peerId) activeSpeakerId = null;
+    refreshParticipantsIfOpen();
+  }
+
+  // ── Participants overlay (full-screen video grid) ───────────────
+  function openParticipantsOverlay() {
+    const overlay = $("participants-overlay");
+    if (!overlay) return;
+    buildParticipantsGrid();
+    overlay.classList.remove("hidden");
+    const btn = $("btn-participants");
+    if (btn) btn.classList.add("active");
+    renderIcons();
+  }
+
+  function closeParticipantsOverlay() {
+    const overlay = $("participants-overlay");
+    if (overlay) overlay.classList.add("hidden");
+    const btn = $("btn-participants");
+    if (btn) btn.classList.remove("active");
+    // Stop thumbnail videos to save resources
+    const grid = $("participants-grid");
+    if (grid) grid.querySelectorAll("video").forEach(v => { v.srcObject = null; });
+  }
+
+  function refreshParticipantsIfOpen() {
+    const overlay = $("participants-overlay");
+    if (overlay && !overlay.classList.contains("hidden")) {
+      buildParticipantsGrid();
+    }
+  }
+
+  function toggleParticipantsOverlay() {
+    const overlay = $("participants-overlay");
+    if (!overlay) return;
+    if (overlay.classList.contains("hidden")) {
+      openParticipantsOverlay();
+    } else {
+      closeParticipantsOverlay();
+    }
+  }
+
+  function buildParticipantsGrid() {
+    const grid = $("participants-grid");
+    const countEl = $("participants-count");
+    if (!grid) return;
+    grid.innerHTML = "";
+
+    const total = 1 + peerNames.size;
+    if (countEl) countEl.textContent = total;
+    const isHost = meetingState.isHost;
+
+    // Local user tile
+    const localName = getLocalName();
+    const localTile = createParticipantTile(
+      localStream, localName + " (You)", null, isHost, false
+    );
+    localTile.addEventListener("click", () => {
+      closeParticipantsOverlay();
+      spotlightLocal();
+    });
+    grid.appendChild(localTile);
+
+    // Remote peer tiles
+    peerNames.forEach((name, peerId) => {
+      const remoteWrap = document.getElementById("remote-" + peerId);
+      let stream = null;
+      if (remoteWrap) {
+        const srcVid = remoteWrap.querySelector("video");
+        if (srcVid && srcVid.srcObject) stream = srcVid.srcObject;
+      }
+      const isSpeaking = activeSpeakerId === peerId;
+      const tile = createParticipantTile(stream, name, peerId, isHost, isSpeaking);
+      tile.addEventListener("click", () => {
+        closeParticipantsOverlay();
+        spotlightPeer(peerId);
+      });
+      grid.appendChild(tile);
+    });
+  }
+
+  function createParticipantTile(stream, name, peerId, isHost, isSpeaking) {
+    const tile = document.createElement("div");
+    tile.className = "participant-tile" + (isSpeaking ? " speaking" : "");
+
+    // Live video
+    const vid = document.createElement("video");
+    vid.playsInline = true;
+    vid.autoplay = true;
+    vid.muted = true;
+    if (stream) vid.srcObject = stream;
+    tile.appendChild(vid);
+
+    // Name label
+    const lab = document.createElement("span");
+    lab.className = "participant-tile-name";
+    lab.textContent = name || "Guest";
+    tile.appendChild(lab);
+
+    // Attention overlays (host only, remote peers only)
+    if (isHost && peerId) {
+      const counts = peerAttentionCounts.get(peerId);
+      const pct = (counts && counts.total > 0) ? Math.round((counts.active / counts.total) * 100) : 0;
+      const barClass = pct >= 70 ? "high" : pct >= 40 ? "medium" : "low";
+
+      // Bottom attention bar
+      const bar = document.createElement("div");
+      bar.className = "participant-tile-attention";
+      bar.innerHTML = '<div class="participant-tile-attention-fill ' + barClass + '" style="width:' + pct + '%"></div>';
+      tile.appendChild(bar);
+
+      // Top-right percentage badge
+      const badge = document.createElement("span");
+      badge.className = "participant-tile-pct " + barClass;
+      badge.textContent = pct + "%";
+      tile.appendChild(badge);
+    }
+
+    return tile;
+  }
+
+  // Click a participant → show them in spotlight overlay (large view)
+  function spotlightPeer(peerId) {
+    const wrap = document.getElementById("remote-" + peerId);
+    if (!wrap) return;
+    const vid = wrap.querySelector("video");
+    if (!vid || !vid.srcObject) return;
+    pinnedPeerId = peerId;
+    const overlay = $("spotlight-overlay");
+    const spotVid = $("spotlight-video");
+    const spotLabel = $("spotlight-label");
+    if (overlay && spotVid) {
+      spotVid.srcObject = vid.srcObject;
+      if (spotLabel) spotLabel.textContent = peerNames.get(peerId) || "Guest";
+      overlay.classList.remove("hidden");
+      renderIcons();
+    }
+    closeParticipantsOverlay();
+  }
+
+  function spotlightLocal() {
+    pinnedPeerId = "__local__";
+    const overlay = $("spotlight-overlay");
+    const spotVid = $("spotlight-video");
+    const spotLabel = $("spotlight-label");
+    if (overlay && spotVid) {
+      spotVid.srcObject = localStream;
+      if (spotLabel) spotLabel.textContent = getLocalName() + " (You)";
+      overlay.classList.remove("hidden");
+      renderIcons();
+    }
+    closeParticipantsOverlay();
+  }
+
+  function closeSpotlight() {
+    pinnedPeerId = null;
+    const overlay = $("spotlight-overlay");
+    const spotVid = $("spotlight-video");
+    if (overlay) overlay.classList.add("hidden");
+    if (spotVid) spotVid.srcObject = null;
+  }
+
+  // Active speaker detection via audio levels
+  const audioContexts = new Map(); // peerId -> { ctx, analyser, intervalId }
+  function startSpeakerDetection(peerId, remoteStream) {
+    try {
+      const audioTracks = remoteStream.getAudioTracks();
+      if (!audioTracks.length) return;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(remoteStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const intervalId = setInterval(() => {
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i];
+        const avg = sum / data.length;
+        if (avg > 30) { // threshold for "speaking"
+          if (activeSpeakerId !== peerId) {
+            activeSpeakerId = peerId;
+            refreshParticipantsIfOpen();
+          }
+        }
+      }, 500);
+      audioContexts.set(peerId, { ctx, intervalId });
+    } catch (_) {}
+  }
+
+  function stopSpeakerDetection(peerId) {
+    const entry = audioContexts.get(peerId);
+    if (entry) {
+      clearInterval(entry.intervalId);
+      try { entry.ctx.close(); } catch (_) {}
+      audioContexts.delete(peerId);
+    }
+  }
+
+  function stopAllSpeakerDetection() {
+    audioContexts.forEach((entry, peerId) => {
+      clearInterval(entry.intervalId);
+      try { entry.ctx.close(); } catch (_) {}
+    });
+    audioContexts.clear();
   }
 
   // ── Meeting lifecycle ────────────────────────────────────────
@@ -966,7 +1466,47 @@ if ("serviceWorker" in navigator) {
     renderLocalSignSubtitle();
   }
 
+  function updateAttentionMeter() {
+    const meter = $("attention-meter");
+    if (!meter || !meetingState.isHost) return;
+    if (peerAttentionCounts.size === 0) { meter.classList.add("hidden"); return; }
+    meter.classList.remove("hidden");
+    // Compute overall cumulative active % across all participants
+    let totalActive = 0, totalFrames = 0;
+    for (const counts of peerAttentionCounts.values()) {
+      totalActive += counts.active;
+      totalFrames += counts.total;
+    }
+    const pct = totalFrames > 0 ? Math.round((totalActive / totalFrames) * 100) : 0;
+    const fill = $("attention-meter-fill");
+    const label = $("attention-meter-pct");
+    if (fill) {
+      fill.style.width = pct + "%";
+      fill.className = "attention-meter-fill " + (pct >= 70 ? "high" : pct >= 40 ? "medium" : "low");
+    }
+    if (label) label.textContent = pct + "%";
+  }
+
+  function startAttentionDetection() {
+    // Host does not need attention detection — only participants are tracked
+    if (meetingState.isHost) return;
+    if (!window.AttentionDetection || AttentionDetection.isRunning()) return;
+    const video = $("local-video");
+    if (!video || !socket) return;
+    AttentionDetection.start(video, socket, () => {
+      // Participant's status is sent to server via socket; no local UI needed
+    }).catch((err) => {
+      console.warn("[attention] could not start:", err.message);
+    });
+  }
+
   async function cleanupMeeting() {
+    if (window.AttentionDetection && AttentionDetection.isRunning()) {
+      AttentionDetection.stop();
+    }
+    liveAttention.clear();
+    const meter = $("attention-meter");
+    if (meter) meter.classList.add("hidden");
     stopScreenShare();
     stopStt();
     await stopHandSignCaptions();
@@ -981,7 +1521,14 @@ if ("serviceWorker" in navigator) {
     if (subBox2) subBox2.innerHTML = "";
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
-    $("remote-videos").innerHTML = "";
+    peerNames.clear();
+    peerAttentionCounts.clear();
+    stopAllSpeakerDetection();
+    closeSpotlight();
+    hideFeatured();
+    pinnedPeerId = null;
+    activeSpeakerId = null;
+    document.querySelectorAll("#meeting-grid .remote-wrap").forEach(el => el.remove());
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     facingMode = "user";
     const lv = $("local-video");
@@ -996,6 +1543,7 @@ if ("serviceWorker" in navigator) {
     const hsBar = $("hand-sign-bar"); if(hsBar) hsBar.style.display = "none";
     const sp = $("settings-popup"); if (sp) sp.classList.add("hidden");
     const sb = $("btn-settings"); if (sb) sb.classList.remove("active");
+    closeParticipantsOverlay();
     micMuted = false; camMuted = false;
   }
 
@@ -1006,7 +1554,6 @@ if ("serviceWorker" in navigator) {
 
   async function startHost() {
     if (busy) return;
-    readLangSelects("host");
     clearLobbyError();
     busy = true;
     try {
@@ -1025,7 +1572,7 @@ if ("serviceWorker" in navigator) {
     socket.on("connect_error", onConnectError);
     registerSocketHandlers();
     const runCreate = () => {
-      socket.emit("room:create", { speakLang, subtitleLang }, async (ack) => {
+      socket.emit("room:create", {}, async (ack) => {
         if (!ack || ack.error) {
           meetingStatus("Could not create room: " + (ack && ack.error ? ack.error : "unknown"));
           await cleanupMeeting(); showView("lobby"); return;
@@ -1034,6 +1581,7 @@ if ("serviceWorker" in navigator) {
         (ack.peers || []).forEach(p => addPeer(p.id, p.name));
         busy = false;
         startStt();
+        startAttentionDetection();
       });
     };
     if (socket.connected) runCreate(); else socket.once("connect", runCreate);
@@ -1041,7 +1589,6 @@ if ("serviceWorker" in navigator) {
 
   async function startJoin(rawCode) {
     if (busy) return;
-    readLangSelects("join");
     const code = String(rawCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (code.length < 4) { $("lobby-error").textContent = "Enter a valid meeting code."; return; }
     clearLobbyError();
@@ -1062,7 +1609,7 @@ if ("serviceWorker" in navigator) {
     socket.on("connect_error", onConnectError);
     registerSocketHandlers();
     const runJoin = () => {
-      socket.emit("room:join", { code, speakLang, subtitleLang }, async (ack) => {
+      socket.emit("room:join", { code }, async (ack) => {
         if (!ack || ack.error) {
           meetingStatus(ack && ack.error === "not_found"
             ? "Meeting not found or already ended."
@@ -1073,6 +1620,7 @@ if ("serviceWorker" in navigator) {
         (ack.peers || []).forEach(p => addPeer(p.id, p.name));
         busy = false;
         startStt();
+        startAttentionDetection();
         try { const u = new URL(window.location.href); u.searchParams.delete("join"); window.history.replaceState({}, "", u.toString()); } catch (_) {}
       });
     };
@@ -1119,7 +1667,7 @@ if ("serviceWorker" in navigator) {
             if (socket && socket.connected) {
               socket.emit("sign:caption", {
                 text: payload.text, gestureKey: payload.gestureKey,
-                kind: payload.kind || "gesture", lang: payload.lang, translatedText: payload.translatedText,
+                kind: payload.kind || "gesture",
               });
             }
             if (payload.kind !== "spell" || payload.text) {
@@ -1242,9 +1790,60 @@ if ("serviceWorker" in navigator) {
     if (skipBtn) skipBtn.addEventListener("click", onSkip);
   }
 
+  // ── Summary rendering helpers ──────────────────────────────
+  function renderSummarySection(elId, cardId, items, renderItem) {
+    const el = $(elId);
+    const card = $(cardId);
+    if (el && items && items.length > 0) {
+      el.innerHTML = "";
+      items.forEach((item) => {
+        const div = document.createElement("div");
+        div.className = elId.replace("summary-", "summary-") + "-item";
+        if (typeof item === "string") {
+          div.className = "summary-decision-item";
+          div.innerHTML = renderItem(item);
+        } else {
+          div.innerHTML = renderItem(item);
+        }
+        el.appendChild(div);
+      });
+      if (card) card.classList.remove("hidden");
+    } else if (card) {
+      card.classList.add("hidden");
+    }
+  }
+
+  function renderContributions(participantSummaries) {
+    const contCard = $("summary-contributions-card");
+    const contEl = $("summary-contributions");
+    if (contCard && contEl && participantSummaries && participantSummaries.length > 0) {
+      contEl.innerHTML = "";
+      participantSummaries.forEach((p) => {
+        const div = document.createElement("div");
+        div.className = "contribution-person";
+        let html = '<div class="contribution-person-name">' + escapeHtml(p.name) + '</div>';
+        if (p.spoken && p.spoken !== "No contributions") {
+          html += '<div class="contribution-section"><span class="contribution-tag voice">Voice</span><span class="contribution-text">' + escapeHtml(p.spoken) + '</span></div>';
+        }
+        if (p.chatted && p.chatted !== "No contributions") {
+          html += '<div class="contribution-section"><span class="contribution-tag chat">Chat</span><span class="contribution-text">' + escapeHtml(p.chatted) + '</span></div>';
+        }
+        if ((!p.spoken || p.spoken === "No contributions") && (!p.chatted || p.chatted === "No contributions")) {
+          html += '<div class="contribution-section"><span class="contribution-text" style="color:var(--text-3);font-style:italic;">No voice or chat contributions</span></div>';
+        }
+        div.innerHTML = html;
+        contEl.appendChild(div);
+      });
+      contCard.classList.remove("hidden");
+    } else if (contCard) {
+      contCard.classList.add("hidden");
+    }
+  }
+
   // ── Meeting Summary ──────────────────────────────────────────
   async function showMeetingSummary(code) {
     summaryRoomCode = code;
+    historyMeetingId = null; // live meeting, not from history
     summaryChatHistory = [];
     showView("summary");
     renderIcons();
@@ -1266,7 +1865,9 @@ if ("serviceWorker" in navigator) {
     let data = null;
     for (let i = 0; i < 30; i++) {
       try {
-        const res = await fetch("/api/meeting-summary/" + encodeURIComponent(code));
+        const summaryUrl = "/api/meeting-summary/" + encodeURIComponent(code)
+          + (pendingAttentionData ? "?includeAttention=true" : "");
+        const res = await fetch(summaryUrl);
         if (res.ok) {
           data = await res.json();
           break;
@@ -1289,6 +1890,11 @@ if ("serviceWorker" in navigator) {
 
     // Populate summary cards
     if (cards) cards.classList.remove("hidden");
+
+    // Show regenerate button if summary looks like a fallback
+    const regenBtn = $("btn-regenerate-summary");
+    const isFallback = !data.topics || data.topics.length === 0;
+    if (regenBtn) regenBtn.classList.toggle("hidden", !isFallback);
 
     // Show meeting name in title if provided
     const titleEl = $("summary-title");
@@ -1313,59 +1919,42 @@ if ("serviceWorker" in navigator) {
     // Store attendee details for popup
     populateAttendeePopup(data.attendeeDetails || [], data.attendees || []);
 
-    // Topics
-    const topicsEl = $("summary-topics");
-    const topicsCard = $("summary-topics-card");
-    if (topicsEl && data.topics && data.topics.length > 0) {
-      topicsEl.innerHTML = "";
-      data.topics.forEach((t) => {
-        const div = document.createElement("div");
-        div.className = "summary-topic-item";
-        div.innerHTML = "<strong>" + escapeHtml(t.title) + "</strong><p>" + escapeHtml(t.details) + "</p>";
-        topicsEl.appendChild(div);
-      });
-      if (topicsCard) topicsCard.classList.remove("hidden");
-    } else if (topicsCard) {
-      topicsCard.classList.add("hidden");
-    }
+    // Topics, Assignments, Key Decisions, Contributions
+    renderSummarySection("summary-topics", "summary-topics-card", data.topics, (t) =>
+      "<strong>" + escapeHtml(t.title) + "</strong><p>" + escapeHtml(t.details) + "</p>");
+    renderSummarySection("summary-assignments", "summary-assignments-card", data.assignments, (a) =>
+      '<span class="assignment-badge">' + escapeHtml(a.assignee) + "</span> " + escapeHtml(a.task));
+    renderSummarySection("summary-decisions", "summary-decisions-card", data.keyDecisions, (d) => escapeHtml(d));
+    renderContributions(data.participantSummaries);
 
-    // Assignments
-    const assignEl = $("summary-assignments");
-    const assignCard = $("summary-assignments-card");
-    if (assignEl && data.assignments && data.assignments.length > 0) {
-      assignEl.innerHTML = "";
-      data.assignments.forEach((a) => {
-        const div = document.createElement("div");
-        div.className = "summary-assignment-item";
-        div.innerHTML = '<span class="assignment-badge">' + escapeHtml(a.assignee) + "</span> " + escapeHtml(a.task);
-        assignEl.appendChild(div);
+    // Attention Report (host only)
+    const attCard = $("summary-attention-card");
+    const attEl = $("summary-attention");
+    const attData = data.attentionStats || (pendingAttentionData || null);
+    if (attCard && attEl && attData && attData.length > 0) {
+      attEl.innerHTML = "";
+      attData.forEach((a) => {
+        const pct = typeof a.activePercent === "number" ? a.activePercent : 0;
+        const level = pct >= 70 ? "high" : pct >= 40 ? "medium" : "low";
+        const item = document.createElement("div");
+        item.className = "attention-item";
+        item.innerHTML =
+          '<span class="attention-item-name">' + escapeHtml(a.name) + '</span>' +
+          '<div class="attention-bar-wrap"><div class="attention-bar ' + level + '" style="width:' + pct + '%"></div></div>' +
+          '<span class="attention-percent">' + pct + '%</span>';
+        attEl.appendChild(item);
       });
-      if (assignCard) assignCard.classList.remove("hidden");
-    } else if (assignCard) {
-      assignCard.classList.add("hidden");
+      attCard.classList.remove("hidden");
+    } else if (attCard) {
+      attCard.classList.add("hidden");
     }
-
-    // Key Decisions
-    const decEl = $("summary-decisions");
-    const decCard = $("summary-decisions-card");
-    if (decEl && data.keyDecisions && data.keyDecisions.length > 0) {
-      decEl.innerHTML = "";
-      data.keyDecisions.forEach((d) => {
-        const div = document.createElement("div");
-        div.className = "summary-decision-item";
-        div.textContent = d;
-        decEl.appendChild(div);
-      });
-      if (decCard) decCard.classList.remove("hidden");
-    } else if (decCard) {
-      decCard.classList.add("hidden");
-    }
+    pendingAttentionData = null;
 
     renderIcons();
   }
 
   async function askSummaryQuestion(question) {
-    if (!summaryRoomCode || !question.trim()) return;
+    if ((!summaryRoomCode && !historyMeetingId) || !question.trim()) return;
 
     const chatLog = $("summary-chat-log");
     if (!chatLog) return;
@@ -1388,9 +1977,19 @@ if ("serviceWorker" in navigator) {
     chatLog.scrollTop = chatLog.scrollHeight;
 
     try {
-      const res = await fetch("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/ask", {
+      let url, headers;
+      if (historyMeetingId) {
+        // Past meeting from Supabase
+        url = "/api/meeting-history/" + encodeURIComponent(historyMeetingId) + "/ask";
+        headers = { "Content-Type": "application/json", Authorization: "Bearer " + getToken() };
+      } else {
+        // In-memory live meeting summary
+        url = "/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/ask";
+        headers = { "Content-Type": "application/json" };
+      }
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ question }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1445,29 +2044,6 @@ if ("serviceWorker" in navigator) {
     }
   }
 
-  // ── Language selector helpers ────────────────────────────────
-  function populateLangSelects() {
-    const ids = ["host-speak-lang", "host-subtitle-lang", "join-speak-lang", "join-subtitle-lang"];
-    ids.forEach((id) => {
-      const sel = $(id);
-      if (!sel || sel.children.length) return;
-      Object.entries(LANGUAGES).forEach(([code, { name }]) => {
-        const opt = document.createElement("option");
-        opt.value = code;
-        opt.textContent = name;
-        sel.appendChild(opt);
-      });
-      sel.value = "en";
-    });
-  }
-
-  function readLangSelects(prefix) {
-    const sp = $(prefix + "-speak-lang");
-    const sb = $(prefix + "-subtitle-lang");
-    if (sp) speakLang = sp.value || "en";
-    if (sb) subtitleLang = sb.value || "en";
-  }
-
   // ── Wire up all event listeners ──────────────────────────────
   function wireEvents() {
     const on = (id, event, handler) => {
@@ -1483,6 +2059,22 @@ if ("serviceWorker" in navigator) {
     on("btn-host", "click", () => startHost());
     on("form-join", "submit", (ev) => { ev.preventDefault(); startJoin($("join-code").value); });
     on("btn-logout", "click", logout);
+
+    // Recent Meetings modal
+    on("btn-recent-meetings", "click", () => {
+      const modal = $("recent-meetings-modal");
+      if (modal) { modal.classList.remove("hidden"); loadRecentMeetings(); renderIcons(); }
+    });
+    on("btn-recent-close", "click", () => {
+      const modal = $("recent-meetings-modal");
+      if (modal) modal.classList.add("hidden");
+    });
+    const recentModal = $("recent-meetings-modal");
+    if (recentModal) {
+      recentModal.addEventListener("click", (e) => {
+        if (e.target === recentModal) recentModal.classList.add("hidden");
+      });
+    }
 
     // Meeting controls
     on("btn-copy-link", "click", async () => {
@@ -1551,6 +2143,19 @@ if ("serviceWorker" in navigator) {
       const btn = $("btn-toggle-handsign-bar");
       if (btn) btn.classList.toggle("active", isHidden);
     });
+
+    // Participants overlay
+    on("btn-participants", "click", () => toggleParticipantsOverlay());
+    on("btn-participants-close", "click", () => closeParticipantsOverlay());
+
+    // Spotlight close button
+    on("btn-spotlight-close", "click", () => closeSpotlight());
+    const spotOverlay = $("spotlight-overlay");
+    if (spotOverlay) {
+      spotOverlay.addEventListener("click", (e) => {
+        if (e.target === spotOverlay) closeSpotlight();
+      });
+    }
 
     // Settings popup
     const settingsBtn = $("btn-settings");
@@ -1744,12 +2349,20 @@ if ("serviceWorker" in navigator) {
         docInput.style.height = "auto";
         docInput.style.height = Math.min(docInput.scrollHeight, 120) + "px";
       });
+      docInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          const form = $("doc-chat-form");
+          if (form) form.dispatchEvent(new Event("submit", { cancelable: true }));
+        }
+      });
     }
 
     // Summary view events
     on("btn-back-lobby", "click", () => {
       summaryRoomCode = null;
       summaryMeetingName = "";
+      historyMeetingId = null;
       showView("lobby");
       refreshLobbyUser();
     });
@@ -1757,6 +2370,45 @@ if ("serviceWorker" in navigator) {
     on("btn-export-summary", "click", () => {
       if (!summaryRoomCode) return;
       window.open("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/export", "_blank");
+    });
+
+    on("btn-regenerate-summary", "click", async () => {
+      if (!summaryRoomCode) return;
+      const btn = $("btn-regenerate-summary");
+      if (btn) { btn.disabled = true; btn.textContent = "Regenerating..."; }
+      try {
+        const url = "/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/regenerate"
+          + (pendingAttentionData ? "?includeAttention=true" : "");
+        const res = await fetch(url, { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          // Re-render the full summary with new data
+          const loading = $("summary-loading");
+          if (loading) loading.classList.add("hidden");
+          const cards = $("summary-cards");
+          if (cards) cards.classList.remove("hidden");
+
+          const isFallback = !data.topics || data.topics.length === 0;
+          if (btn) btn.classList.toggle("hidden", !isFallback);
+
+          const txt = $("summary-text");
+          if (txt) txt.textContent = data.summary || "No summary available.";
+
+          renderSummarySection("summary-topics", "summary-topics-card", data.topics, (t) =>
+            "<strong>" + escapeHtml(t.title) + "</strong><p>" + escapeHtml(t.details) + "</p>");
+          renderSummarySection("summary-assignments", "summary-assignments-card", data.assignments, (a) =>
+            '<span class="assignment-badge">' + escapeHtml(a.assignee) + "</span> " + escapeHtml(a.task));
+          renderSummarySection("summary-decisions", "summary-decisions-card", data.keyDecisions, (d) => escapeHtml(d));
+          renderContributions(data.participantSummaries);
+          renderIcons();
+        } else {
+          meetingStatus("Regeneration failed — API may still be rate limited. Try again.");
+        }
+      } catch {
+        meetingStatus("Regeneration failed — check your connection.");
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="refresh-cw" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;"></i> Regenerate'; renderIcons(); }
+      }
     });
 
     // Attendee popup
@@ -1793,6 +2445,17 @@ if ("serviceWorker" in navigator) {
         summaryInput.style.height = "auto";
         summaryInput.style.height = Math.min(summaryInput.scrollHeight, 120) + "px";
       });
+      // Enter to send (Shift+Enter for new line)
+      summaryInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          const q = summaryInput.value.trim();
+          if (!q) return;
+          summaryInput.value = "";
+          summaryInput.style.height = "auto";
+          askSummaryQuestion(q);
+        }
+      });
     }
 
     initInsightTabs();
@@ -1803,7 +2466,6 @@ if ("serviceWorker" in navigator) {
   async function boot() {
     wireEvents();
     initStt();
-    populateLangSelects();
 
     // Check for existing session
     const token = getToken();
