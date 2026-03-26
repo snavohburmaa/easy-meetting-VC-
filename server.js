@@ -768,12 +768,12 @@ io.on("connection", (socket) => {
     // Generate summary before notifying clients
     let summaryCode = null;
     const transcript = meetingTranscript.getTranscript(code);
+    const attentionData = getAttentionSummary(code);
     if (transcript && transcript.entries.length > 0) {
       summaryCode = code;
       generateSummary(code).then(async (summaryData) => {
         meetingTranscript.deleteTranscript(code);
         if (summaryData) {
-          // Apply pending name (user may have named it while AI was generating)
           const pending = pendingMeetingNames.get(code);
           if (pending) { summaryData.meetingName = pending; pendingMeetingNames.delete(code); }
           meetingHistory.saveMeeting(summaryData, hostEmail, participantsMeta).catch((e) =>
@@ -785,8 +785,21 @@ io.on("connection", (socket) => {
       });
     } else {
       meetingTranscript.deleteTranscript(code);
+      // Save meeting even without transcript so it appears in history for all participants
+      const basicSummary = {
+        roomCode: code,
+        meetingName: pendingMeetingNames.get(code) || "",
+        summary: "",
+        topics: [], assignments: [], keyDecisions: [],
+        participantSummaries: [], attentionStats: attentionData || [],
+        rawTranscript: "",
+        durationMinutes: 0,
+        attendees: participantsMeta.map(p => p.name || p.email),
+      };
+      pendingMeetingNames.delete(code);
+      meetingHistory.saveMeeting(basicSummary, hostEmail, participantsMeta).catch((e) =>
+        console.error("[meeting-history] save error:", e.message || e));
     }
-    const attentionData = getAttentionSummary(code);
     io.to(code).emit("room:ended", { reason: "host_ended", summaryCode, attentionData });
     clearAttention(code);
     await clearRoomSockets(code);
@@ -827,6 +840,7 @@ async function leaveSocketRoom(socket) {
     roomDocuments.clearRoom(result.code);
     let summaryCode = null;
     const transcript = meetingTranscript.getTranscript(result.code);
+    const attentionData = getAttentionSummary(result.code);
     if (transcript && transcript.entries.length > 0) {
       summaryCode = result.code;
       generateSummary(result.code).then(async (summaryData) => {
@@ -842,8 +856,20 @@ async function leaveSocketRoom(socket) {
       });
     } else {
       meetingTranscript.deleteTranscript(result.code);
+      const basicSummary = {
+        roomCode: result.code,
+        meetingName: pendingMeetingNames.get(result.code) || "",
+        summary: "",
+        topics: [], assignments: [], keyDecisions: [],
+        participantSummaries: [], attentionStats: attentionData || [],
+        rawTranscript: "",
+        durationMinutes: 0,
+        attendees: participantsMeta.map(p => p.name || p.email),
+      };
+      pendingMeetingNames.delete(result.code);
+      meetingHistory.saveMeeting(basicSummary, hostEmail, participantsMeta).catch((e) =>
+        console.error("[meeting-history] save error:", e.message || e));
     }
-    const attentionData = getAttentionSummary(result.code);
     io.to(result.code).emit("room:ended", {
       reason: result.reason === "host_left" ? "host_left" : "empty",
       summaryCode,
@@ -874,4 +900,6 @@ server.on("error", (err) => {
 server.listen(PORT, HOST, () => {
   console.log(`Meet: http://localhost:${PORT}`);
   console.log(`Listening on ${HOST}:${PORT} (LAN ready)`);
+  console.log(`DEEPSEEK_API_KEY: ${process.env.DEEPSEEK_API_KEY ? "configured (" + process.env.DEEPSEEK_API_KEY.slice(0, 6) + "...)" : "NOT SET"}`);
+  console.log(`SUPABASE_URL: ${process.env.SUPABASE_URL ? "configured" : "NOT SET"}`);
 });

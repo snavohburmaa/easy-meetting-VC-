@@ -57,6 +57,9 @@
   let currentScore = 0;
   let currentStatus = "Unknown";
   let _dbg = 0;
+  let _tickCount = 0;
+  let _faceCount = 0;
+  let _noFaceCount = 0;
 
   /* ── Math ──────────────────────────────────────────────────── */
   function dist(a, b) {
@@ -138,6 +141,7 @@
   async function tick() {
     if (!running || !detector || !videoEl || detecting) return;
     detecting = true;
+    _tickCount++;
     const now = Date.now();
 
     try {
@@ -146,6 +150,7 @@
       const faces = await detector.estimateFaces(videoEl, { flipHorizontal: false });
 
       if (faces.length > 0) {
+        _faceCount++;
         const kp = faces[0].keypoints.map(p => [p.x, p.y, p.z || 0]);
         const earL = computeEAR(LEFT_EYE.map(i => kp[i]));
         const earR = computeEAR(RIGHT_EYE.map(i => kp[i]));
@@ -173,11 +178,14 @@
             _dbg = now;
             console.log("[attention] ear:" + ((earL + earR) / 2).toFixed(3),
               "eye:" + es, "head:" + hs.toFixed(1),
-              "score:" + currentScore.toFixed(2), "→", currentStatus);
+              "score:" + currentScore.toFixed(2), "→", currentStatus,
+              "| ticks:" + _tickCount, "faces:" + _faceCount, "noFace:" + _noFaceCount,
+              "window:" + scoreWindow.length);
           }
         }
       } else {
         // No face → 0
+        _noFaceCount++;
         scoreWindow.push({ score: 0, ts: now });
       }
 
@@ -224,14 +232,22 @@
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5/dist/face-landmarks-detection.min.js");
     }
 
-    detector = await faceLandmarksDetection.createDetector(
-      faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-      { runtime: "tfjs", refineLandmarks: true, maxFaces: 1 }
-    );
+    console.log("[attention] loading model...");
+    try {
+      detector = await faceLandmarksDetection.createDetector(
+        faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+        { runtime: "tfjs", refineLandmarks: true, maxFaces: 1 }
+      );
+      console.log("[attention] model loaded OK");
+    } catch (modelErr) {
+      console.error("[attention] model failed to load:", modelErr);
+      return;
+    }
 
     running = true;
     loopTimer = setInterval(tick, DETECT_INTERVAL_MS);
     console.log("[attention] started (5fps, calibrating " + CALIBRATION_SEC + "s)");
+    console.log("[attention] video readyState:", videoEl.readyState, "srcObject:", !!videoEl.srcObject);
   }
 
   function stop() {
