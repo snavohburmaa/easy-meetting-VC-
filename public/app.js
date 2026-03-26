@@ -13,10 +13,6 @@ if ("serviceWorker" in navigator) {
   let meetingState = { joinUrl: "", code: "", isHost: false };
   let busy = false;
 
-  let lastLocalSignLine = "";
-  let localSpellDraft = "";
-  const ttsPending = [];
-  const MAX_TTS_QUEUED = 3;
 
   let docPdfBlobUrl = null;
   let pdfDoc = null;
@@ -48,7 +44,8 @@ if ("serviceWorker" in navigator) {
   // Attention detection state
   let pendingAttentionData = null; // stored from room:ended for host summary
   const liveAttention = new Map(); // peerId -> "Active"|"Distracted"|"Eyes Closed" (host tracks all peers)
-  const peerAttentionCounts = new Map(); // peerId -> { active: 0, total: 0 } (host tracks %)
+  const peerAttentionCounts = new Map(); // peerId -> { scoreSum, total } (participants only)
+  let hostSelfAttention = null; // { scoreSum, total } — host's own data, excluded from overall meter
 
   // English-only speech recognition
   const SPEECH_LANG = "en-US";
@@ -73,6 +70,7 @@ if ("serviceWorker" in navigator) {
 
   // ── View management ──────────────────────────────────────────
   let summaryRoomCode = null;
+  let summaryWasHost = false;
   let summaryChatHistory = [];
   let summaryMeetingName = "";
   let historyMeetingId = null; // set when viewing a past meeting from Supabase
@@ -614,10 +612,12 @@ if ("serviceWorker" in navigator) {
       renderSummarySection("summary-decisions", "summary-decisions-card", data.keyDecisions, (d) => escapeHtml(d));
       renderContributions(data.participantSummaries);
 
-      // Attention
+      // Attention (host only — check if current user is the host of this meeting)
+      const currentUserEmail = (() => { const t = getToken(); if (!t) return ""; const p = decodeJwtPayload(t); return (p && p.email) || ""; })();
+      const wasHostOfMeeting = data.hostEmail && currentUserEmail && data.hostEmail === currentUserEmail;
       const attCard = $("summary-attention-card");
       const attEl = $("summary-attention");
-      if (attCard && attEl && data.attentionStats && data.attentionStats.length > 0) {
+      if (wasHostOfMeeting && attCard && attEl && data.attentionStats && data.attentionStats.length > 0) {
         attEl.innerHTML = "";
         data.attentionStats.forEach((a) => {
           const pct = typeof a.activePercent === "number" ? a.activePercent : 0;
@@ -656,62 +656,6 @@ if ("serviceWorker" in navigator) {
     const box = $("subtitle-box");
     if (!subtitlesEnabled && box) box.innerHTML = "";
   }
-
-  function renderLocalSignSubtitle() {
-    const el = $("local-sign-subtitle");
-    if (!el) return;
-    if (!lastLocalSignLine && !localSpellDraft) { el.textContent = ""; return; }
-    el.textContent = "";
-    if (lastLocalSignLine) el.appendChild(document.createTextNode(lastLocalSignLine));
-    if (localSpellDraft) {
-      const span = document.createElement("span");
-      span.className = "sign-draft";
-      span.textContent = "Spelling: " + localSpellDraft;
-      el.appendChild(span);
-    }
-  }
-
-  function setRemoteSignSubtitle(peerId, data) {
-    const wrap = document.getElementById("remote-" + peerId);
-    if (!wrap) return;
-    const sub = wrap.querySelector(".remote-sign-subtitle");
-    if (!sub) return;
-    let line = data.text || "";
-    const kind = data.kind && data.kind !== "gesture" ? " [" + data.kind + "]" : "";
-    sub.textContent = line ? line + kind : "";
-  }
-
-  // ── TTS ──────────────────────────────────────────────────────
-  function flushTtsQueue() {
-    if (!window.speechSynthesis) return;
-    const chk = $("sign-tts-enable");
-    if (!chk || !chk.checked) {
-      try { speechSynthesis.cancel(); } catch (_) {}
-      ttsPending.length = 0;
-      return;
-    }
-    if (document.hidden) return;
-    if (speechSynthesis.speaking || speechSynthesis.pending) return;
-    const next = ttsPending.shift();
-    if (!next) return;
-    const u = new SpeechSynthesisUtterance(next.text);
-    u.lang = next.lang || "en-US";
-    u.onend = () => flushTtsQueue();
-    u.onerror = () => flushTtsQueue();
-    speechSynthesis.speak(u);
-  }
-
-  function enqueueSignTts(text, lang) {
-    const chk = $("sign-tts-enable");
-    if (!chk || !chk.checked || !text) return;
-    if (ttsPending.length >= MAX_TTS_QUEUED) ttsPending.shift();
-    ttsPending.push({ text, lang: lang || "en-US" });
-    flushTtsQueue();
-  }
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) flushTtsQueue();
-  });
 
   // ── PDF helpers ──────────────────────────────────────────────
   function hidePdfPreview() {
@@ -805,11 +749,6 @@ if ("serviceWorker" in navigator) {
   function syncDocHostUi() {
     const row = $("doc-upload-row");
     if (row) row.classList.remove("hidden");
-  }
-
-  function emitDocLanguage() {
-    if (!socket || !socket.connected) return;
-    socket.emit("doc:setLanguage", { preferredLanguage: "en" });
   }
 
   function applyDocPayload(d) {
@@ -980,28 +919,40 @@ if ("serviceWorker" in navigator) {
     // Attention updates — host receives these for all participants (including self)
     socket.on("attention:update", ({ peerId, name, status, score }) => {
       if (!meetingState.isHost) return;
-      liveAttention.set(peerId, status);
-      // Track cumulative score for percentage
-      if (!peerAttentionCounts.has(peerId)) peerAttentionCounts.set(peerId, { scoreSum: 0, total: 0 });
-      const counts = peerAttentionCounts.get(peerId);
-      counts.total++;
-      counts.scoreSum += (typeof score === "number") ? score : 0;
-      const pct = counts.total > 0 ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
-      const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
-      // Update badge on video tile (remote peer or own local tile)
       const isSelf = socket && peerId === socket.id;
-      const wrap = isSelf ? $("local-tile") : document.getElementById("remote-" + peerId);
-      if (wrap) {
-        let badge = wrap.querySelector(".attention-badge");
-        if (!badge) {
-          badge = document.createElement("span");
-          badge.className = "attention-badge";
-          wrap.appendChild(badge);
+      liveAttention.set(peerId, status);
+
+      if (isSelf) {
+        // Host's own data — show on local tile but DON'T add to peerAttentionCounts
+        if (!hostSelfAttention) hostSelfAttention = { scoreSum: 0, total: 0 };
+        hostSelfAttention.total++;
+        hostSelfAttention.scoreSum += (typeof score === "number") ? score : 0;
+        const pct = hostSelfAttention.total > 0 ? Math.round((hostSelfAttention.scoreSum / hostSelfAttention.total) * 100) : 0;
+        const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
+        const wrap = $("local-tile");
+        if (wrap) {
+          let badge = wrap.querySelector(".attention-badge");
+          if (!badge) { badge = document.createElement("span"); badge.className = "attention-badge"; wrap.appendChild(badge); }
+          badge.setAttribute("data-status", cls);
+          badge.textContent = pct + "%";
         }
-        badge.setAttribute("data-status", cls);
-        badge.textContent = pct + "%";
+      } else {
+        // Participant data — track in peerAttentionCounts for overall meter
+        if (!peerAttentionCounts.has(peerId)) peerAttentionCounts.set(peerId, { scoreSum: 0, total: 0 });
+        const counts = peerAttentionCounts.get(peerId);
+        counts.total++;
+        counts.scoreSum += (typeof score === "number") ? score : 0;
+        const pct = counts.total > 0 ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
+        const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
+        const wrap = document.getElementById("remote-" + peerId);
+        if (wrap) {
+          let badge = wrap.querySelector(".attention-badge");
+          if (!badge) { badge = document.createElement("span"); badge.className = "attention-badge"; wrap.appendChild(badge); }
+          badge.setAttribute("data-status", cls);
+          badge.textContent = pct + "%";
+        }
+        updateAttentionMeter();
       }
-      updateAttentionMeter();
     });
 
     // Screen share permission — host receives requests
@@ -1025,43 +976,6 @@ if ("serviceWorker" in navigator) {
       line.textContent = `[${t}] ${data.from}: ${data.text}`;
       log.appendChild(line);
       log.scrollTop = log.scrollHeight;
-    });
-
-    socket.on("sign:caption", (data) => {
-      const isSelf = socket && data.socketId === socket.id;
-      if (isSelf) {
-        lastLocalSignLine = data.text || "";
-        renderLocalSignSubtitle();
-      } else if (data.socketId) {
-        setRemoteSignSubtitle(data.socketId, data);
-      }
-
-      ["sign-log", "sign-log-sidebar"].forEach((logId) => {
-        const signLog = $(logId);
-        if (signLog) {
-          const line = document.createElement("div");
-          line.className = "sign-line";
-          const t = new Date(data.at).toLocaleTimeString();
-          let body = `${data.from}: ${data.text}`;
-          if (data.kind && data.kind !== "gesture") body += ` (${data.kind})`;
-          line.textContent = `[${t}] ${body}`;
-          signLog.appendChild(line);
-          signLog.scrollTop = signLog.scrollHeight;
-        }
-      });
-
-      const chat = $("chat-log");
-      if (chat) {
-        const c = document.createElement("div");
-        c.className = "sign-chat-echo";
-        const t = new Date(data.at).toLocaleTimeString();
-        c.textContent = `[Sign] [${t}] ${data.from}: ${data.text}`;
-        chat.appendChild(c);
-        chat.scrollTop = chat.scrollHeight;
-      }
-
-      if (!isSelf) enqueueSignTts(data.text, data.lang);
-      flushTtsQueue();
     });
 
     /* ── Real-time voice captions — show translated text from others ── */
@@ -1117,6 +1031,7 @@ if ("serviceWorker" in navigator) {
       };
       meetingStatus(labels[reason] || "Meeting ended.");
       const wasHost = meetingState.isHost;
+      summaryWasHost = wasHost;
       // Save attention data before cleanup (host only)
       pendingAttentionData = (wasHost && Array.isArray(attentionData)) ? attentionData : null;
       await cleanupMeeting();
@@ -1447,35 +1362,15 @@ if ("serviceWorker" in navigator) {
     $("btn-end").classList.toggle("hidden", !ack.isHost);
     meetingStatus("");
     $("chat-log").innerHTML = "";
-    ["sign-log","sign-log-sidebar"].forEach(id => { const el = $(id); if(el) el.innerHTML = ""; });
-    const hs = $("hand-sign-enable");
-    if (hs) hs.checked = false;
-    const sp = $("hand-sign-spell");
-    if (sp) sp.checked = false;
-    lastLocalSignLine = "";
-    localSpellDraft = "";
-    renderLocalSignSubtitle();
-    document.querySelectorAll(".remote-sign-subtitle").forEach(n => { n.textContent = ""; });
     const subBox = $("subtitle-box");
     if (subBox) subBox.innerHTML = "";
     resetDocPanel();
     syncDocHostUi();
     const dinput = $("doc-file-input");
     if (dinput) dinput.value = "";
-    if (socket && socket.connected) emitDocLanguage();
     setMicMuted(true);
     setCamMuted(true);
     setSubtitlesEnabled(false);
-  }
-
-  async function stopHandSignCaptions() {
-    if (window.HandSignCaptions && window.HandSignCaptions.isRunning()) {
-      try { await window.HandSignCaptions.stop(); } catch (_) {}
-    }
-    const hs = $("hand-sign-enable");
-    if (hs) hs.checked = false;
-    localSpellDraft = "";
-    renderLocalSignSubtitle();
   }
 
   function updateAttentionMeter() {
@@ -1533,20 +1428,14 @@ if ("serviceWorker" in navigator) {
     if (meter) meter.classList.add("hidden");
     stopScreenShare();
     stopStt();
-    await stopHandSignCaptions();
     resetDocPanel();
-    ttsPending.length = 0;
-    if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch (_) {} }
-    lastLocalSignLine = "";
-    localSpellDraft = "";
-    const locSub = $("local-sign-subtitle");
-    if (locSub) locSub.textContent = "";
     const subBox2 = $("subtitle-box");
     if (subBox2) subBox2.innerHTML = "";
     peers.forEach(p => { try { p.destroy(); } catch (_) {} });
     peers.clear();
     peerNames.clear();
     peerAttentionCounts.clear();
+    hostSelfAttention = null;
     stopAllSpeakerDetection();
     closeSpotlight();
     hideFeatured();
@@ -1564,7 +1453,6 @@ if ("serviceWorker" in navigator) {
     const shareM = $("share-modal"); if (shareM) shareM.classList.add("hidden");
     const scrReq = $("screen-request-popup"); if (scrReq) scrReq.remove();
     closeSidebar();
-    const hsBar = $("hand-sign-bar"); if(hsBar) hsBar.style.display = "none";
     const sp = $("settings-popup"); if (sp) sp.classList.add("hidden");
     const sb = $("btn-settings"); if (sb) sb.classList.remove("active");
     closeParticipantsOverlay();
@@ -1672,50 +1560,6 @@ if ("serviceWorker" in navigator) {
 
   function endMeetingForAll() {
     if (socket && socket.connected) socket.emit("room:end");
-  }
-
-  // ── Hand-sign captions ───────────────────────────────────────
-  async function syncHandSignFromCheckbox() {
-    const el = $("hand-sign-enable");
-    const video = $("local-video");
-    if (!el || !video) return;
-    const want = el.checked;
-    if (want) {
-      if (!window.HandSignCaptions) { meetingStatus("Hand-sign script not loaded."); el.checked = false; return; }
-      if (!window.HandSignAlphabetKit) { meetingStatus("Missing vendor/handsigns-alphabet.js \u2014 run: npm run build:handsigns"); el.checked = false; return; }
-      try {
-        meetingStatus("Loading hand models...");
-        await window.HandSignCaptions.start(
-          video,
-          (payload) => {
-            if (socket && socket.connected) {
-              socket.emit("sign:caption", {
-                text: payload.text, gestureKey: payload.gestureKey,
-                kind: payload.kind || "gesture",
-              });
-            }
-            if (payload.kind !== "spell" || payload.text) {
-              lastLocalSignLine = payload.text || "";
-              renderLocalSignSubtitle();
-            }
-          },
-          {
-            getSpellMode: () => { const e = $("hand-sign-spell"); return !!(e && e.checked); },
-            onSpellPreview: (state) => {
-              localSpellDraft = state && state.buffer ? state.buffer : "";
-              renderLocalSignSubtitle();
-            },
-          }
-        );
-        meetingStatus("");
-      } catch (e) {
-        console.error(e);
-        meetingStatus("Hand recognition failed: " + (e && e.message ? e.message : e));
-        el.checked = false;
-      }
-    } else if (window.HandSignCaptions) {
-      try { await window.HandSignCaptions.stop(); } catch (_) {}
-    }
   }
 
   // ── Login ────────────────────────────────────────────────────
@@ -1951,11 +1795,11 @@ if ("serviceWorker" in navigator) {
     renderSummarySection("summary-decisions", "summary-decisions-card", data.keyDecisions, (d) => escapeHtml(d));
     renderContributions(data.participantSummaries);
 
-    // Attention Report (host only)
+    // Attention Report (host only — participants don't see this)
     const attCard = $("summary-attention-card");
     const attEl = $("summary-attention");
     const attData = data.attentionStats || (pendingAttentionData || null);
-    if (attCard && attEl && attData && attData.length > 0) {
+    if (summaryWasHost && attCard && attEl && attData && attData.length > 0) {
       attEl.innerHTML = "";
       attData.forEach((a) => {
         const pct = typeof a.activePercent === "number" ? a.activePercent : 0;
@@ -2159,15 +2003,6 @@ if ("serviceWorker" in navigator) {
     });
 
 
-    on("btn-toggle-handsign-bar", "click", () => {
-      const bar = $("hand-sign-bar");
-      if (!bar) return;
-      const isHidden = bar.style.display === "none" || bar.style.display === "";
-      bar.style.display = isHidden ? "flex" : "none";
-      const btn = $("btn-toggle-handsign-bar");
-      if (btn) btn.classList.toggle("active", isHidden);
-    });
-
     // Participants overlay
     on("btn-participants", "click", () => toggleParticipantsOverlay());
     on("btn-participants-close", "click", () => closeParticipantsOverlay());
@@ -2227,50 +2062,7 @@ if ("serviceWorker" in navigator) {
 
 
 
-    // Hand-sign checkboxes
-    const handSignCb = $("hand-sign-enable");
-    if (handSignCb) handSignCb.addEventListener("change", () => void syncHandSignFromCheckbox());
-
-    const spellCb = $("hand-sign-spell");
-    if (spellCb) spellCb.addEventListener("change", () => {
-      if (window.HandSignCaptions && window.HandSignCaptions.isRunning()) {
-        if (!spellCb.checked) window.HandSignCaptions.clearSpellBuffer();
-      }
-    });
-
-    // Spell buttons
-    function spellNeedHandSign() {
-      meetingStatus('Turn on "Hand-sign captions" first, then enable Finger-spelling.');
-      setTimeout(() => meetingStatus(""), 5000);
-    }
-
-    const btnSpellCommit = $("btn-spell-commit");
-    if (btnSpellCommit) {
-      btnSpellCommit.addEventListener("click", () => {
-        if (!window.HandSignCaptions || !window.HandSignCaptions.isRunning()) { spellNeedHandSign(); return; }
-        const before = window.HandSignCaptions.getSpellBuffer
-          ? String(window.HandSignCaptions.getSpellBuffer() || "").trim() : "";
-        window.HandSignCaptions.commitSpell();
-        if (!before) { meetingStatus("Nothing to send yet \u2014 hold each letter steady until it appears."); setTimeout(() => meetingStatus(""), 5000); }
-        else meetingStatus("");
-      });
-    }
-
-    const btnSpellClear = $("btn-spell-clear");
-    if (btnSpellClear) {
-      btnSpellClear.addEventListener("click", () => {
-        if (!window.HandSignCaptions || !window.HandSignCaptions.isRunning()) { spellNeedHandSign(); return; }
-        window.HandSignCaptions.clearSpellBuffer();
-        localSpellDraft = ""; renderLocalSignSubtitle();
-        meetingStatus("Spelling buffer cleared."); setTimeout(() => meetingStatus(""), 2000);
-      });
-    }
-
     // Doc language
-    const docLang = $("doc-lang-select");
-    if (docLang) docLang.addEventListener("change", () => emitDocLanguage());
-
-
     // Doc file upload
     const docFile = $("doc-file-input");
     if (docFile) {
@@ -2393,7 +2185,8 @@ if ("serviceWorker" in navigator) {
 
     on("btn-export-summary", "click", () => {
       if (!summaryRoomCode) return;
-      window.open("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/export", "_blank");
+      const attParam = summaryWasHost ? "?includeAttention=true" : "";
+      window.open("/api/meeting-summary/" + encodeURIComponent(summaryRoomCode) + "/export" + attParam, "_blank");
     });
 
     on("btn-regenerate-summary", "click", async () => {

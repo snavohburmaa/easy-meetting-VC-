@@ -253,8 +253,8 @@ app.get("/api/meeting-summary/:code/export", (req, res) => {
     });
   }
 
-  // ── Attention Stats ──
-  if (data.attentionStats && data.attentionStats.length) {
+  // ── Attention Stats (host only — requires includeAttention=true) ──
+  if (req.query.includeAttention === "true" && data.attentionStats && data.attentionStats.length) {
     c += `\n  \u25B8 PARTICIPANT ATTENTION\n`;
     c += `  ${hr()}\n`;
     data.attentionStats.forEach((a) => {
@@ -634,56 +634,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  const SIGN_KINDS = new Set(["gesture", "spell", "model"]);
-
-  socket.on("doc:setLanguage", (payload) => {
-    const code = socket.data.roomCode;
-    if (!code) return;
-    const raw =
-      typeof payload?.preferredLanguage === "string"
-        ? payload.preferredLanguage.trim().slice(0, 12)
-        : "";
-    socket.data.preferredLanguage = raw || "en";
-    meetingDoc.emitUserPayloadForOneSocket(io, socket, code).catch(() => {});
-    meetingDoc.emitPayloadForOneSocket(io, socket, code).catch((err) => console.error("[doc emit]", err));
-  });
-
-  socket.on("sign:caption", (payload) => {
-    const code = socket.data.roomCode;
-    if (!code) return;
-    const now = Date.now();
-    if (!socket.data.signCaptionLog) socket.data.signCaptionLog = [];
-    socket.data.signCaptionLog = socket.data.signCaptionLog.filter((t) => now - t < 1000);
-    if (socket.data.signCaptionLog.length >= 12) return;
-    socket.data.signCaptionLog.push(now);
-
-    const text = typeof payload?.text === "string" ? payload.text.slice(0, 500) : "";
-    if (!text.trim()) return;
-    const gestureKey =
-      typeof payload?.gestureKey === "string" ? payload.gestureKey.slice(0, 64) : "";
-    let kind = typeof payload?.kind === "string" ? payload.kind.trim().toLowerCase() : "gesture";
-    if (!SIGN_KINDS.has(kind)) kind = "gesture";
-    const lang =
-      typeof payload?.lang === "string" ? payload.lang.trim().slice(0, 16) : "";
-    const translatedText =
-      typeof payload?.translatedText === "string"
-        ? payload.translatedText.trim().slice(0, 500)
-        : "";
-
-    const signAt = Date.now();
-    meetingTranscript.addEntry(code, { at: signAt, from: socket.user.name, text: text.trim(), type: "sign" });
-    io.to(code).emit("sign:caption", {
-      text: text.trim(),
-      gestureKey,
-      kind,
-      lang: lang || undefined,
-      translatedText: translatedText || undefined,
-      at: signAt,
-      from: socket.user.name,
-      socketId: socket.id,
-    });
-  });
-
   /* ── Real-time voice-to-text captions (English only) ── */
   socket.on("caption:voice", (payload) => {
     const code = socket.data.roomCode;
@@ -760,8 +710,11 @@ io.on("connection", (socket) => {
   socket.on("room:end", async () => {
     const code = socket.data.roomCode;
     if (!code) return;
-    // Capture participant metadata before room is deleted
+    // Capture participant metadata and room start time before room is deleted
     const { hostEmail, participants: participantsMeta } = rooms.getParticipantsMeta(code);
+    const roomObj = rooms.getRoom(code);
+    const roomCreatedAt = roomObj ? roomObj.createdAt : Date.now();
+    const meetingDurationMin = Math.max(1, Math.round((Date.now() - roomCreatedAt) / 60000));
     if (!rooms.endRoomByHost(code, socket.id)) return;
     roomDocuments.clearRoom(code);
     // Generate summary before notifying clients
@@ -783,6 +736,9 @@ io.on("connection", (socket) => {
         meetingTranscript.deleteTranscript(code);
       });
     } else {
+      // Grab attendee details before deleting transcript
+      const txForDetails = meetingTranscript.getTranscript(code);
+      const attendeeDetails = (txForDetails && txForDetails.attendeeDetails) || [];
       meetingTranscript.deleteTranscript(code);
       // Save meeting even without transcript so it appears in history for all participants
       const basicSummary = {
@@ -791,8 +747,9 @@ io.on("connection", (socket) => {
         summary: "",
         topics: [], assignments: [], keyDecisions: [],
         participantSummaries: [], attentionStats: attentionData || [],
+        attendeeDetails,
         rawTranscript: "",
-        durationMinutes: 0,
+        durationMinutes: meetingDurationMin,
         attendees: participantsMeta.map(p => p.name || p.email),
       };
       pendingMeetingNames.delete(code);
@@ -827,8 +784,10 @@ async function leaveSocketRoom(socket) {
   const code = socket.data.roomCode;
   if (!code) return;
   meetingTranscript.markAttendeeLeft(code, socket.user.name);
-  // Capture participant metadata before room might be deleted
+  // Capture participant metadata and room start time before room might be deleted
   const { hostEmail, participants: participantsMeta } = rooms.getParticipantsMeta(code);
+  const roomObj = rooms.getRoom(code);
+  const roomCreatedAt = roomObj ? roomObj.createdAt : Date.now();
   const result = rooms.removeParticipant(socket.id);
   socket.data.roomCode = null;
   if (!result) {
@@ -836,6 +795,7 @@ async function leaveSocketRoom(socket) {
     return;
   }
   if (result.ended) {
+    const meetingDurationMin = Math.max(1, Math.round((Date.now() - roomCreatedAt) / 60000));
     roomDocuments.clearRoom(result.code);
     let summaryCode = null;
     const transcript = meetingTranscript.getTranscript(result.code);
@@ -854,6 +814,8 @@ async function leaveSocketRoom(socket) {
         meetingTranscript.deleteTranscript(result.code);
       });
     } else {
+      const txForDetails = meetingTranscript.getTranscript(result.code);
+      const attendeeDetails = (txForDetails && txForDetails.attendeeDetails) || [];
       meetingTranscript.deleteTranscript(result.code);
       const basicSummary = {
         roomCode: result.code,
@@ -861,8 +823,9 @@ async function leaveSocketRoom(socket) {
         summary: "",
         topics: [], assignments: [], keyDecisions: [],
         participantSummaries: [], attentionStats: attentionData || [],
+        attendeeDetails,
         rawTranscript: "",
-        durationMinutes: 0,
+        durationMinutes: meetingDurationMin,
         attendees: participantsMeta.map(p => p.name || p.email),
       };
       pendingMeetingNames.delete(result.code);

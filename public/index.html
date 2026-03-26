@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Meet — Video, Voice &amp; Chat</title>
-    <meta name="description" content="Meet: instant video meetings with shared docs, hand-sign captions, and AI-powered document insights." />
+    <meta name="description" content="Meet: instant video meetings with AI-powered summaries, attention detection, and document insights." />
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#7c3aed" />
@@ -84,7 +84,7 @@
             Free &amp; Open-Source MVP
           </div>
           <h2>Meet without friction.</h2>
-          <p>Instant video rooms with real-time chat, hand-sign captions, and AI-powered document insights.</p>
+          <p>Instant video rooms with real-time chat, AI-powered summaries, and attention detection.</p>
           <div class="lobby-user-chip">
             <div class="lobby-user-avatar" id="lobby-user-avatar">?</div>
             <span id="lobby-user"></span>
@@ -612,9 +612,6 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/vendor/simplepeer.min.js"></script>
-    <script src="/vendor/handsigns-alphabet.js"></script>
-    <script src="/sign-labels.js"></script>
-    <script src="/hand-sign.js"></script>
     <script src="/attention.js"></script>
     <script src="/app.js"></script>
     <script>

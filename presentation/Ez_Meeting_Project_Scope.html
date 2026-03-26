@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Ez Meeting - Project Scope & Documentation</title>
+<style>
+@page { size: A4; margin: 20mm; }
+body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a2e; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #7c3aed; font-size: 28px; border-bottom: 3px solid #7c3aed; padding-bottom: 10px; text-align: center; }
+h2 { color: #4c1d95; font-size: 20px; margin-top: 30px; border-bottom: 2px solid #e5e7eb; padding-bottom: 5px; }
+h3 { color: #6d28d9; font-size: 16px; margin-top: 20px; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+th { background: #7c3aed; color: white; padding: 8px 10px; text-align: left; }
+td { border: 1px solid #e5e7eb; padding: 6px 10px; vertical-align: top; }
+tr:nth-child(even) { background: #f9fafb; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-ai { background: #fef3c7; color: #92400e; }
+.badge-rt { background: #dbeafe; color: #1e40af; }
+.flow-box { background: #f3f0ff; border: 1px solid #c4b5fd; border-radius: 8px; padding: 12px 16px; margin: 8px 0; }
+.flow-arrow { text-align: center; color: #7c3aed; font-size: 20px; margin: 4px 0; }
+.arch-box { background: #1a1a2e; color: #e5e7eb; padding: 16px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre; overflow-x: auto; line-height: 1.4; }
+.feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.feature-card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 14px; }
+.feature-card h4 { margin: 0 0 4px 0; font-size: 14px; color: #4c1d95; }
+.feature-card p { margin: 0; font-size: 12px; color: #4b5563; }
+.subtitle { text-align: center; color: #6b7280; font-size: 14px; margin-top: -8px; }
+.page-break { page-break-before: always; }
+ul { padding-left: 20px; }
+li { margin-bottom: 3px; font-size: 13px; }
+.header-meta { text-align: center; color: #9ca3af; font-size: 12px; margin-bottom: 30px; }
+</style>
+</head>
+<body>
+
+<h1>Ez Meeting</h1>
+<p class="subtitle">Video Conferencing with AI-Powered Summaries & Attention Detection</p>
+<p class="header-meta">Project Scope, Flow & Tools Documentation | Version 2.0</p>
+
+<!-- ============================================================ -->
+<h2>1. Project Overview</h2>
+<p>Ez Meeting is a real-time video conferencing web application with AI-powered meeting summaries, document collaboration, voice captions (English), and participant attention detection using face/eye tracking. Built as a progressive web app (PWA) for instant access on any device.</p>
+
+<div class="feature-grid">
+  <div class="feature-card">
+    <h4>Instant Meetings</h4>
+    <p>Create or join with a 6-character code or QR scan. No downloads required.</p>
+  </div>
+  <div class="feature-card">
+    <h4>AI Meeting Summary</h4>
+    <p>Automatic post-meeting summary with topics, action items, and key decisions via DeepSeek.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Attention Detection</h4>
+    <p>Real-time face/eye tracking with per-participant active percentage (host-only view).</p>
+  </div>
+  <div class="feature-card">
+    <h4>Document Collaboration</h4>
+    <p>Upload, analyze, and ask AI questions about documents during the meeting.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Voice Captions</h4>
+    <p>Real-time English speech-to-text. Always-on transcript for AI summary.</p>
+  </div>
+  <div class="feature-card">
+    <h4>Meeting History</h4>
+    <p>All participants can view past meetings, summaries, and export reports.</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. Tech Stack & Tools</h2>
+
+<table>
+  <tr><th>Layer</th><th>Technology</th><th>Purpose</th></tr>
+  <tr><td><strong>Frontend</strong></td><td>Vanilla JavaScript, HTML5, CSS3</td><td>Single-page app, no framework dependency</td></tr>
+  <tr><td></td><td>WebRTC + simple-peer</td><td>Peer-to-peer video/audio streaming</td></tr>
+  <tr><td></td><td>Socket.io (client)</td><td>Real-time signaling, chat, captions</td></tr>
+  <tr><td></td><td>MediaPipe FaceLandmarker</td><td>Face/eye detection for attention scoring</td></tr>
+  <tr><td></td><td>Browser SpeechRecognition API</td><td>English voice-to-text captions & transcript</td></tr>
+  <tr><td></td><td>Lucide Icons</td><td>UI iconography</td></tr>
+  <tr><td></td><td>PWA (Service Worker)</td><td>Installable on mobile</td></tr>
+  <tr><td><strong>Backend</strong></td><td>Node.js (v18+)</td><td>Server runtime</td></tr>
+  <tr><td></td><td>Express.js</td><td>HTTP server & REST API</td></tr>
+  <tr><td></td><td>Socket.io (server)</td><td>WebSocket signaling & events</td></tr>
+  <tr><td></td><td>better-auth + JWT</td><td>User authentication & sessions</td></tr>
+  <tr><td></td><td>Multer</td><td>File upload handling</td></tr>
+  <tr><td></td><td>QRCode</td><td>Meeting QR code generation</td></tr>
+  <tr><td><strong>AI</strong></td><td>DeepSeek API</td><td>Meeting summaries, document analysis, Q&A (all AI functions)</td></tr>
+  <tr><td><strong>Database</strong></td><td>SQLite (better-sqlite3)</td><td>User accounts & sessions (local)</td></tr>
+  <tr><td></td><td>Supabase PostgreSQL</td><td>Meeting history persistence (cloud)</td></tr>
+  <tr><td><strong>Document</strong></td><td>pdf-parse, mammoth, officeparser</td><td>PDF, Word, Excel, PowerPoint extraction</td></tr>
+  <tr><td><strong>Deploy</strong></td><td>Railway + Docker</td><td>Cloud deployment with auto-deploy on push</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 class="page-break">3. Application Flow</h2>
+
+<h3>3.1 Login Flow</h3>
+<div class="flow-box">1. User opens app &rarr; Login page</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">2. Enter email + display name &rarr; Server issues JWT token</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">3. Token stored in browser localStorage &rarr; Redirected to Lobby</div>
+
+<h3>3.2 Meeting Flow</h3>
+<div class="flow-box"><strong>Host:</strong> Click "Start Meeting" &rarr; Server creates room with 6-char code &rarr; Share code/QR/link</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box"><strong>Participant:</strong> Enter code or scan QR &rarr; Join room &rarr; WebRTC connections established with all peers</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box"><strong>During Meeting:</strong> Video/audio streaming, chat, screen share, document upload, voice captions, attention detection all run simultaneously</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box"><strong>End Meeting:</strong> Host clicks "End for all" OR last person leaves</div>
+
+<h3>3.3 Post-Meeting Summary Flow</h3>
+<div class="flow-box">1. Server compiles transcript (voice captions + chat messages)</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">2. Transcript sent to DeepSeek API &rarr; AI generates structured summary</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">3. Summary includes: overview, topics, action items, key decisions, participant contributions</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">4. Meeting saved to Supabase (accessible from "Recent Meetings" by all participants)</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">5. Users can ask follow-up AI questions, export as text, rename the meeting</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">6. Attention report shown only to host. Participants see summary without attention data.</div>
+
+<h3>3.4 Attention Detection Flow</h3>
+<div class="flow-box">1. Each user's browser opens a separate low-res camera stream (320x240) for detection</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">2. MediaPipe FaceLandmarker detects face landmarks every 300ms</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">3. Per-frame scoring: Eye score (open=1, closed=0) &times; 0.6 + Head score (forward=1, slight turn=0.5, away=0) &times; 0.4</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">4. 3-second sliding window average &rarr; Status: Active (&gt;70%), Semi-active (40-70%), Not active (&lt;40%)</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">5. Score emitted to server every 1s &rarr; Server relays to host only &rarr; Host sees % on each participant's tile and overall meter</div>
+
+<h3>3.5 Document Q&A Flow</h3>
+<div class="flow-box">1. User uploads document (PDF, Word, Excel, PowerPoint, text, code, etc.)</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">2. Server extracts text &rarr; DeepSeek generates overview, key points, study questions, objectives</div>
+<div class="flow-arrow">&darr;</div>
+<div class="flow-box">3. Insights shown in sidebar &rarr; User can ask questions &rarr; DeepSeek answers using document context (RAG)</div>
+
+<!-- ============================================================ -->
+<h2 class="page-break">4. Feature Details</h2>
+
+<h3>4.1 Core Meeting Features</h3>
+<table>
+  <tr><th>Feature</th><th>Description</th><th>Type</th></tr>
+  <tr><td>Video/Audio Calls</td><td>WebRTC peer-to-peer mesh. Each participant connects directly to all others.</td><td><span class="badge badge-rt">Real-time</span></td></tr>
+  <tr><td>Text Chat</td><td>Socket.io messages with timestamps and sender names. Persisted in transcript.</td><td><span class="badge badge-rt">Real-time</span></td></tr>
+  <tr><td>Screen Sharing</td><td>Host shares directly. Guests request permission. Shared screen shown in center featured tile.</td><td><span class="badge badge-rt">Real-time</span></td></tr>
+  <tr><td>Camera Flip</td><td>Switch between front and back camera on mobile devices.</td><td></td></tr>
+  <tr><td>Meeting Share</td><td>QR code, copy link, and room code display for inviting participants.</td><td></td></tr>
+  <tr><td>Participants View</td><td>Full-screen overlay showing all participants with live video tiles. Host sees attention %.</td><td></td></tr>
+  <tr><td>Spotlight View</td><td>Click any participant to see them in a large full-screen overlay. Close with X.</td><td></td></tr>
+</table>
+
+<h3>4.2 AI Features (All DeepSeek)</h3>
+<table>
+  <tr><th>Feature</th><th>Description</th><th>API</th></tr>
+  <tr><td>Meeting Summary</td><td>Auto-generated overview, topics, assignments, key decisions after meeting ends</td><td><span class="badge badge-ai">DeepSeek</span></td></tr>
+  <tr><td>Meeting Q&A</td><td>Ask follow-up questions about any past or current meeting</td><td><span class="badge badge-ai">DeepSeek</span></td></tr>
+  <tr><td>Document Analysis</td><td>Overview, key points, deep dive, study questions, objectives from uploaded files</td><td><span class="badge badge-ai">DeepSeek</span></td></tr>
+  <tr><td>Document Q&A</td><td>Ask questions about uploaded documents (RAG-style)</td><td><span class="badge badge-ai">DeepSeek</span></td></tr>
+</table>
+
+<h3>4.3 Attention Detection</h3>
+<table>
+  <tr><th>Component</th><th>Detail</th></tr>
+  <tr><td>Detection Engine</td><td>MediaPipe FaceLandmarker (WASM + GPU), separate 320x240 camera stream</td></tr>
+  <tr><td>Detection Rate</td><td>~3 fps (300ms interval)</td></tr>
+  <tr><td>Eye Scoring</td><td>Eye Aspect Ratio (EAR): open=1, closed=0. Blinks &lt;350ms ignored.</td></tr>
+  <tr><td>Head Scoring</td><td>Forward=1, slight turn=0.5, looking away/down=0. Grace time: 2s.</td></tr>
+  <tr><td>Weighting</td><td>Final = Eye &times; 0.6 + Head &times; 0.4</td></tr>
+  <tr><td>Smoothing</td><td>3-second sliding window average</td></tr>
+  <tr><td>Calibration</td><td>First 3 seconds: learn user's normal head position as baseline</td></tr>
+  <tr><td>Status</td><td>&gt;0.7 = Active, 0.4-0.7 = Semi-active, &lt;0.4 = Not active</td></tr>
+  <tr><td>Visibility</td><td>Host-only. Participants cannot see any attention data. Host's own % excluded from overall meter.</td></tr>
+  <tr><td>Emit Rate</td><td>Score sent to server every 1 second</td></tr>
+</table>
+
+<h3>4.4 Voice Captions (English Only)</h3>
+<table>
+  <tr><th>Feature</th><th>Description</th></tr>
+  <tr><td>Speech-to-Text</td><td>Browser SpeechRecognition API (English). Always runs when mic is on for transcript capture.</td></tr>
+  <tr><td>Subtitle Display</td><td>Toggle in Settings. Controls visibility only &mdash; transcript always captured for AI summary.</td></tr>
+  <tr><td>Mute Protection</td><td>STT stops when mic muted to prevent ghost captions from speaker audio.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 class="page-break">5. Architecture</h2>
+
+<div class="arch-box">
+&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
+&#9474;                    FRONTEND (Browser)                         &#9474;
+&#9474;                                                              &#9474;
+&#9474;  Login &#8594; Lobby &#8594; Meeting Room &#8594; Summary View              &#9474;
+&#9474;                                                              &#9474;
+&#9474;  WebRTC Mesh        Socket.io         MediaPipe FaceLandmarker&#9474;
+&#9474;  (Video/Audio)     (Chat/Signals)     (Attention Detection)   &#9474;
+&#9474;                                                              &#9474;
+&#9474;  SpeechRecognition (English Voice Captions &amp; Transcript)      &#9474;
+&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9516;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;
+                               &#9474;
+                         HTTP + WebSocket
+                               &#9474;
+&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9524;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
+&#9474;              BACKEND (Node.js + Express)                       &#9474;
+&#9474;                                                              &#9474;
+&#9474;  REST API:                                                    &#9474;
+&#9474;    /api/auth/*        &#8212; Authentication (JWT + Sessions)       &#9474;
+&#9474;    /api/qr/:code      &#8212; QR code generation                   &#9474;
+&#9474;    /api/rooms/:code/* &#8212; Document upload &amp; Q&amp;A                &#9474;
+&#9474;    /api/meeting-*     &#8212; Summary, history, export             &#9474;
+&#9474;    /api/recent-*      &#8212; User's past meetings                 &#9474;
+&#9474;                                                              &#9474;
+&#9474;  Socket.io:                                                    &#9474;
+&#9474;    room:create/join/leave/end &#8212; Room lifecycle                &#9474;
+&#9474;    signal, chat:message, caption:voice                        &#9474;
+&#9474;    screen:request/respond &#8212; Screen share                     &#9474;
+&#9474;    attention:status/update &#8212; Attention (host-only)           &#9474;
+&#9474;    doc:processing/ready/error &#8212; Document pipeline            &#9474;
+&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9516;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9516;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;
+               &#9474;                      &#9474;
+      SQLite (Local)           Supabase (Cloud)
+      User accounts            Meeting history
+      Sessions                 Participants
+               &#9474;
+      DeepSeek API (All AI)
+      &#9500;&#9472; Meeting summaries
+      &#9500;&#9472; Document analysis
+      &#9492;&#9472; Q&amp;A (meeting + document)
+</div>
+
+<!-- ============================================================ -->
+<h2 class="page-break">6. Socket.io Events</h2>
+
+<h3>6.1 Client &rarr; Server</h3>
+<table>
+  <tr><th>Event</th><th>Payload</th><th>Purpose</th></tr>
+  <tr><td>room:create</td><td>{}</td><td>Host creates new meeting room</td></tr>
+  <tr><td>room:join</td><td>{ code }</td><td>Participant joins room</td></tr>
+  <tr><td>room:leave</td><td>&mdash;</td><td>Leave meeting gracefully</td></tr>
+  <tr><td>room:end</td><td>&mdash;</td><td>Host ends meeting for all</td></tr>
+  <tr><td>signal</td><td>{ targetId, signal }</td><td>WebRTC SDP/ICE signaling</td></tr>
+  <tr><td>chat:message</td><td>{ text }</td><td>Send chat message</td></tr>
+  <tr><td>caption:voice</td><td>{ text, isFinal }</td><td>English voice caption from STT</td></tr>
+  <tr><td>screen:request</td><td>&mdash;</td><td>Guest requests screen share</td></tr>
+  <tr><td>screen:respond</td><td>{ targetId, approved }</td><td>Host approves/denies</td></tr>
+  <tr><td>attention:status</td><td>{ status, score }</td><td>Attention score (0-1)</td></tr>
+</table>
+
+<h3>6.2 Server &rarr; Client</h3>
+<table>
+  <tr><th>Event</th><th>Payload</th><th>Purpose</th></tr>
+  <tr><td>peer:joined</td><td>{ peerId, name }</td><td>New participant joined</td></tr>
+  <tr><td>peer:left</td><td>{ peerId }</td><td>Participant left</td></tr>
+  <tr><td>signal</td><td>{ fromId, signal }</td><td>Relay WebRTC signaling</td></tr>
+  <tr><td>chat:message</td><td>{ text, from, at, socketId }</td><td>Broadcast chat</td></tr>
+  <tr><td>caption:voice</td><td>{ text, from, at, socketId, isFinal }</td><td>Broadcast voice caption</td></tr>
+  <tr><td>attention:update</td><td>{ peerId, name, status, score }</td><td>To host only</td></tr>
+  <tr><td>room:ended</td><td>{ reason, summaryCode, attentionData }</td><td>Meeting ended</td></tr>
+  <tr><td>screen:approved / denied</td><td>&mdash;</td><td>Screen share response</td></tr>
+  <tr><td>doc:processing / ready / error</td><td>{ fileName, ... }</td><td>Document pipeline status</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>7. Server Library Modules</h2>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td>lib/auth.js</td><td>JWT token signing/verification + better-auth session management</td></tr>
+  <tr><td>lib/rooms.js</td><td>In-memory room state: create, join, leave, end, participant metadata</td></tr>
+  <tr><td>lib/meetingTranscript.js</td><td>Collect voice and chat entries during meeting for AI summary</td></tr>
+  <tr><td>lib/meetingSummary.js</td><td>Generate AI meeting summary + Q&A via DeepSeek</td></tr>
+  <tr><td>lib/meetingHistory.js</td><td>Persist/query meetings in Supabase for all participants</td></tr>
+  <tr><td>lib/summarize.js</td><td>Document insight generation (overview, key points, etc.) via DeepSeek</td></tr>
+  <tr><td>lib/geminiDocChat.js</td><td>Document Q&A &mdash; RAG-style answers using extracted text</td></tr>
+  <tr><td>lib/geminiKeys.js</td><td>DeepSeek API key pool with rate-limit rotation</td></tr>
+  <tr><td>lib/documentExtract.js</td><td>Multi-format text extraction (PDF, Word, Excel, PPT, code, etc.)</td></tr>
+  <tr><td>lib/meetingDocumentPipeline.js</td><td>Upload &rarr; extract &rarr; analyze &rarr; emit to clients</td></tr>
+  <tr><td>lib/roomDocuments.js</td><td>Per-room document state (shared + per-user private docs)</td></tr>
+  <tr><td>lib/supabase.js</td><td>Supabase client initialization</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 class="page-break">8. Database Schema</h2>
+
+<h3>8.1 SQLite (Local &mdash; User Auth)</h3>
+<table>
+  <tr><th>Table</th><th>Columns</th></tr>
+  <tr><td>user</td><td>id, name, email, emailVerified, image, createdAt, updatedAt</td></tr>
+  <tr><td>session</td><td>id, expiresAt, token, ipAddress, userAgent, userId, createdAt, updatedAt</td></tr>
+  <tr><td>account</td><td>id, accountId, providerId, userId, accessToken, refreshToken, password, ...</td></tr>
+</table>
+
+<h3>8.2 Supabase PostgreSQL (Cloud &mdash; Meeting History)</h3>
+<table>
+  <tr><th>Table</th><th>Columns</th></tr>
+  <tr><td>meetings</td><td>id (UUID), room_code, meeting_name, summary, topics (JSONB), assignments (JSONB), key_decisions (JSONB), participant_summaries (JSONB), attention_stats (JSONB), raw_transcript, duration_minutes, attendees (TEXT[]), host_email, created_at</td></tr>
+  <tr><td>meeting_participants</td><td>id (UUID), meeting_id (FK), user_email, user_name, is_host, created_at. UNIQUE(meeting_id, user_email)</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>9. Deployment</h2>
+<table>
+  <tr><th>Component</th><th>Detail</th></tr>
+  <tr><td>Platform</td><td>Railway (Docker-based)</td></tr>
+  <tr><td>Dockerfile</td><td>node:20-slim + build tools (python3, make, g++) for better-sqlite3</td></tr>
+  <tr><td>Start Command</td><td><code>node server.js</code></td></tr>
+  <tr><td>Auto-deploy</td><td>On git push to connected GitHub repo</td></tr>
+  <tr><td>Environment Variables</td><td>DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL, JWT_SECRET</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>10. Security</h2>
+<table>
+  <tr><th>Measure</th><th>Implementation</th></tr>
+  <tr><td>Authentication</td><td>JWT tokens (7-day expiry) + better-auth cookie sessions</td></tr>
+  <tr><td>Socket Auth</td><td>JWT verified on every socket connection</td></tr>
+  <tr><td>Room Access</td><td>Participants must be in room to upload docs, chat, or access features</td></tr>
+  <tr><td>Rate Limiting</td><td>Voice caption flood protection (20/sec), doc upload cooldown (8s), doc Q&A cooldown (5s)</td></tr>
+  <tr><td>Input Sanitization</td><td>All user text truncated/sanitized before storage or broadcast</td></tr>
+  <tr><td>File Upload</td><td>20MB limit, UUID filenames, restricted to valid document types</td></tr>
+  <tr><td>Attention Privacy</td><td>Detection runs in-browser. Only numeric scores (0-1) sent to server. Data visible to host only.</td></tr>
+  <tr><td>Summary Privacy</td><td>Attention stats shown only to host in summary and export. Participants see summary without attention data.</td></tr>
+  <tr><td>CORS</td><td>Origin-based CORS with credential support</td></tr>
+</table>
+
+<br>
+<hr>
+<p style="text-align:center; color:#9ca3af; font-size:12px;">Ez Meeting &mdash; Project Scope Document v2.0<br>Generated March 2026</p>
+
+</body>
+</html>
