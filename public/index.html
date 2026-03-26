@@ -8,7 +8,7 @@
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#7c3aed" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Meet" />
     <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
@@ -178,6 +178,13 @@
             <div class="attention-meter-fill" id="attention-meter-fill"></div>
           </div>
           <span id="attention-meter-pct" class="attention-meter-pct">0%</span>
+        </div>
+        <!-- Host self-attention test display -->
+        <div id="self-attention" class="self-attention hidden">
+          <i data-lucide="scan-face" style="width:13px;height:13px;stroke:currentColor;stroke-width:2;"></i>
+          <span>You:</span>
+          <span id="self-attention-pct" class="self-attention-pct">0%</span>
+          <span id="self-attention-status" class="self-attention-status"></span>
         </div>
         <div class="meeting-header-right">
           <button type="button" id="btn-share-meeting" class="small secondary">

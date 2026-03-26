@@ -196,9 +196,10 @@ if ("serviceWorker" in navigator) {
     }
     // Pause/resume STT when mic is muted/unmuted to prevent
     // picking up other people's audio through speakers
+    // STT always runs for transcript capture (not just when subtitles are on)
     if (muted) {
       stopStt();
-    } else if (subtitlesEnabled) {
+    } else {
       startStt();
     }
   }
@@ -976,7 +977,7 @@ if ("serviceWorker" in navigator) {
     socket.on("peer:joined", ({ peerId, name }) => { addPeer(peerId, name || "Guest"); });
     socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); liveAttention.delete(peerId); peerAttentionCounts.delete(peerId); updateAttentionMeter(); });
 
-    // Attention updates — host only receives these for remote participants
+    // Attention updates — host receives these for all participants (including self)
     socket.on("attention:update", ({ peerId, name, status, score }) => {
       if (!meetingState.isHost) return;
       liveAttention.set(peerId, status);
@@ -985,8 +986,11 @@ if ("serviceWorker" in navigator) {
       const counts = peerAttentionCounts.get(peerId);
       counts.total++;
       counts.scoreSum += (typeof score === "number") ? score : 0;
-      // Update badge on video tile with cumulative %
-      const wrap = document.getElementById("remote-" + peerId);
+      const pct = counts.total > 0 ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
+      const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
+      // Update badge on video tile (remote peer or own local tile)
+      const isSelf = socket && peerId === socket.id;
+      const wrap = isSelf ? $("local-tile") : document.getElementById("remote-" + peerId);
       if (wrap) {
         let badge = wrap.querySelector(".attention-badge");
         if (!badge) {
@@ -994,8 +998,6 @@ if ("serviceWorker" in navigator) {
           badge.className = "attention-badge";
           wrap.appendChild(badge);
         }
-        const pct = counts.total > 0 ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
-        const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
         badge.setAttribute("data-status", cls);
         badge.textContent = pct + "%";
       }
@@ -1064,8 +1066,10 @@ if ("serviceWorker" in navigator) {
 
     /* ── Real-time voice captions — show translated text from others ── */
     socket.on("caption:voice", (data) => {
-      if (!data.socketId || !subtitlesEnabled) return;
+      if (!data.socketId) return;
       if (data.socketId === socket.id) return;
+      // Always receive captions (server records transcript), but only show if subtitles on
+      if (!subtitlesEnabled) return;
 
       const box = $("subtitle-box");
       if (!box || !data.isFinal) return;
@@ -1496,15 +1500,26 @@ if ("serviceWorker" in navigator) {
   }
 
   function startAttentionDetection() {
-    // Host does not need attention detection — only participants are tracked
-    if (meetingState.isHost) return;
+    // All users run detection — participants send to server, host tracks self locally
     if (!window.AttentionDetection || AttentionDetection.isRunning()) return;
     const video = $("local-video");
     if (!video || !socket) return;
-    AttentionDetection.start(video, socket, () => {
-      // Participant's status is sent to server via socket; no local UI needed
+    console.log("[app] starting attention detection, isHost:", meetingState.isHost);
+    AttentionDetection.start(video, socket, (status, score) => {
+      // Self-attention display — host only
+      if (meetingState.isHost) {
+        const selfEl = $("self-attention");
+        const selfPct = $("self-attention-pct");
+        const selfStatus = $("self-attention-status");
+        if (selfEl) selfEl.classList.remove("hidden");
+        if (selfPct) selfPct.textContent = Math.round(score * 100) + "%";
+        if (selfStatus) {
+          selfStatus.textContent = status;
+          selfStatus.setAttribute("data-status", status);
+        }
+      }
     }).catch((err) => {
-      console.warn("[attention] could not start:", err.message);
+      console.error("[attention] could not start:", err.message, err);
     });
   }
 
@@ -1513,6 +1528,7 @@ if ("serviceWorker" in navigator) {
       AttentionDetection.stop();
     }
     liveAttention.clear();
+    const selfAtt = $("self-attention"); if (selfAtt) selfAtt.classList.add("hidden");
     const meter = $("attention-meter");
     if (meter) meter.classList.add("hidden");
     stopScreenShare();

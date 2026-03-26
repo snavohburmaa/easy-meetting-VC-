@@ -14,7 +14,7 @@ import { askAboutDocument } from "../lib/geminiDocChat.js";
 const MAX_BYTES = Number(process.env.MAX_DOCUMENT_BYTES) || 20 * 1024 * 1024;
 const MAX_EXTRACT = Number(process.env.MAX_EXTRACT_CHARS) || 80000;
 const UPLOAD_MS_GAP = Number(process.env.DOC_UPLOAD_COOLDOWN_MS) || 8000;
-const DEEPSEEK_KEY = (process.env.DEEPSEEK_API_KEY || "").trim();
+function getDeepseekKey() { return (process.env.DEEPSEEK_API_KEY || "").trim(); }
 const MAX_AI_CONTEXT = Number(process.env.MAX_DEEPSEEK_CONTEXT_CHARS) || 120000;
 const DOC_CHAT_COOLDOWN_MS = Number(process.env.DOC_CHAT_COOLDOWN_MS) || 5000;
 
@@ -209,7 +209,8 @@ export function createDocumentsRouter(io) {
       const gate = await assertInRoom(code, user);
       if (!gate.ok) return res.status(403).json({ error: gate.error });
 
-      if (!DEEPSEEK_KEY) {
+      const deepseekKey = getDeepseekKey();
+      if (!deepseekKey) {
         return res.status(503).json({
           error: "deepseek_not_configured",
           message: "Server has no DEEPSEEK_API_KEY. Add it to .env and restart.",
@@ -253,7 +254,7 @@ export function createDocumentsRouter(io) {
         const answer = await askAboutDocument({
           contextText,
           question,
-          apiKey: DEEPSEEK_KEY,
+          apiKey: deepseekKey,
           language,
         });
         return res.json({ answer });

@@ -394,7 +394,7 @@ app.post("/api/meeting-history/:id/ask", async (req, res) => {
 
   // Use DeepSeek via the same helper used for in-memory summaries
   const { getKey, isRateLimitError, markLimited } = await import("./lib/geminiKeys.js");
-  const DEEPSEEK_BASE = "https://api.deepseek.com";
+  const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
   const prompt = `You are an AI assistant that answers questions about a meeting. Use the transcript and summary below to answer accurately.
 
 === Meeting Summary ===
@@ -747,9 +747,8 @@ io.on("connection", (socket) => {
     const score = typeof payload?.score === "number" ? Math.max(0, Math.min(1, payload.score)) : 0;
     const room = rooms.getRoom(code);
     if (!room) return;
-    // Skip host — only track participants
-    if (room.hostId === socket.id) return;
     recordAttention(code, socket.id, socket.user.name, score);
+    // Send to host (including host's own data back to themselves)
     io.to(room.hostId).emit("attention:update", {
       peerId: socket.id,
       name: socket.user.name,
