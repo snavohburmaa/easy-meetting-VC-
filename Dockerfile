@@ -1,17 +1,11 @@
 FROM node:20-slim
 
-# Install Python3, pip, ffmpeg, curl
+# Build tools needed for better-sqlite3 native addon
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg curl && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
+    apt-get install -y --no-install-recommends python3 make g++ && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Python deps in venv (faster-whisper uses CTranslate2, no PyTorch needed)
-COPY requirements.txt ./
-RUN python3 -m venv .venv && \
-    .venv/bin/pip install --no-cache-dir -r requirements.txt && \
-    find .venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; true
 
 # Node deps
 COPY package.json package-lock.json ./
@@ -20,14 +14,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 # App code
 COPY . .
 
-# Pre-download Whisper model at build time so deploy is instant
-# Use "tiny" for fast + low memory, "base" for better accuracy
-ENV WHISPER_MODEL=tiny
-RUN .venv/bin/python3 -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
-
-RUN chmod +x start.sh
-
-# Railway sets PORT dynamically — expose as a hint only
 EXPOSE ${PORT:-3000}
 
-CMD ["bash", "start.sh"]
+CMD ["node", "server.js"]
