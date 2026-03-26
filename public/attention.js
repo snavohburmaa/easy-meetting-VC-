@@ -1,40 +1,45 @@
 /**
- * Attention Detection Module
- * Uses TensorFlow.js Face Landmarks Detection (MediaPipe FaceMesh)
- * to detect eye state, gaze direction, and head pose in real time.
+ * Attention Detection Module v2
+ * Scoring-based system with per-frame numeric scores (0–1).
  *
- * Privacy: All inference runs in-browser. Only the computed status string
- * is sent over the network — no video frames leave the client.
+ * - 10–15 checks/second
+ * - Eye score: open=1, closed=0 (weight 0.6)
+ * - Head score: forward=1, slight turn=0.5, away/down=0 (weight 0.4)
+ * - Sliding window smoothing (last 2–3 sec)
+ * - Blink ignore (<300ms), grace time (<2s looking away)
+ * - Per-user calibration (first 3–5 sec)
+ * - Confidence threshold (skip low-confidence frames)
+ *
+ * Privacy: All inference runs in-browser. Only score + status sent over network.
  */
 (function () {
   "use strict";
 
   /* ── Constants ─────────────────────────────────────────────── */
-  const ROLLING_WINDOW = 5;           // frames for smoothing (5 sec at 1 fps)
-  const DETECT_INTERVAL_MS = 1000;    // 1 fps detection (every second)
-  const EAR_THRESHOLD = 0.21;         // below = eyes closed
-  const GAZE_THRESHOLD = 0.06;        // iris offset ratio to be "centered"
-  const YAW_THRESHOLD = 25;           // degrees — beyond = turned away
-  const PITCH_THRESHOLD = 20;         // degrees — beyond = looking up/down
-  const EMIT_INTERVAL_MS = 1000;      // send status to server every 1s
+  const DETECT_INTERVAL_MS = 80;        // ~12 fps (10–15 checks/sec)
+  const EMIT_INTERVAL_MS = 1000;        // send to server every 1s
+  const WINDOW_SIZE = 30;               // sliding window: ~2.5 sec at 12fps
+  const EAR_CLOSED = 0.19;             // EAR below this = eyes closed
+  const BLINK_IGNORE_MS = 300;          // blinks shorter than this → still score 1
+  const GRACE_MS = 2000;                // looking away < 2s → still active
+  const CALIBRATION_FRAMES = 40;        // ~3 sec at 12fps for calibration
+  const CONFIDENCE_MIN = 0.5;           // skip frame if face detection confidence below this
+
+  /* Weight */
+  const EYE_WEIGHT = 0.6;
+  const HEAD_WEIGHT = 0.4;
+
+  /* Head pose thresholds (degrees — applied relative to calibrated baseline) */
+  const YAW_SLIGHT = 15;               // slight turn
+  const YAW_AWAY = 35;                 // fully looking away
+  const PITCH_DOWN = 25;               // head down
+  const PITCH_AWAY = 35;               // extreme up/down
 
   /* ── MediaPipe Face Landmark indices ───────────────────────── */
-  // Left eye upper/lower lid landmarks (6 points for EAR)
   const LEFT_EYE = [362, 385, 387, 263, 373, 380];
-  // Right eye upper/lower lid landmarks
   const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-  // Left iris center
   const LEFT_IRIS = 468;
-  // Right iris center
   const RIGHT_IRIS = 473;
-  // Left eye corners (inner, outer)
-  const LEFT_EYE_INNER = 362;
-  const LEFT_EYE_OUTER = 263;
-  // Right eye corners (inner, outer)
-  const RIGHT_EYE_INNER = 133;
-  const RIGHT_EYE_OUTER = 33;
-
-  // Head pose reference points
   const NOSE_TIP = 1;
   const CHIN = 152;
   const LEFT_EYE_CORNER = 263;
@@ -52,10 +57,24 @@
   let lastEmitTime = 0;
   let onStatusChange = null;
 
-  /** Rolling buffer of recent frame statuses */
-  const statusBuffer = [];
+  // Sliding window of { score, ts }
+  const scoreWindow = [];
 
-  /** Current smoothed status */
+  // Blink tracking
+  let eyesClosedSince = 0;             // timestamp when eyes first closed, 0 = open
+
+  // Grace time tracking
+  let headAwaySince = 0;               // timestamp when head first turned away, 0 = forward
+  let lastGoodHeadScore = 1;           // last head score before grace period
+
+  // Calibration
+  let calibrating = true;
+  let calibrationData = [];            // { yaw, pitch } samples
+  let baselineYaw = 0;
+  let baselinePitch = 0;
+
+  // Current state
+  let currentScore = 0;
   let currentStatus = "Unknown";
 
   /* ── Math helpers ──────────────────────────────────────────── */
@@ -65,111 +84,139 @@
     return Math.sqrt(dx * dx + dy * dy);
   }
 
-  /**
-   * Eye Aspect Ratio (EAR)
-   * EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
-   * where p1..p6 are the 6 eye landmarks in order.
-   */
   function computeEAR(eyePoints) {
-    const vertical1 = dist(eyePoints[1], eyePoints[5]);
-    const vertical2 = dist(eyePoints[2], eyePoints[4]);
-    const horizontal = dist(eyePoints[0], eyePoints[3]);
-    if (horizontal < 1e-6) return 0;
-    return (vertical1 + vertical2) / (2.0 * horizontal);
+    const v1 = dist(eyePoints[1], eyePoints[5]);
+    const v2 = dist(eyePoints[2], eyePoints[4]);
+    const h = dist(eyePoints[0], eyePoints[3]);
+    if (h < 1e-6) return 0;
+    return (v1 + v2) / (2.0 * h);
   }
 
-  /**
-   * Iris position ratio: how far the iris is from eye center
-   * Returns value in [-1, 1] range. ~0 = centered, <0 = left, >0 = right
-   */
-  function irisRatio(irisPos, innerCorner, outerCorner) {
-    const eyeWidth = dist(innerCorner, outerCorner);
-    if (eyeWidth < 1e-6) return 0;
-    const eyeCenterX = (innerCorner[0] + outerCorner[0]) / 2;
-    return (irisPos[0] - eyeCenterX) / eyeWidth;
-  }
-
-  /**
-   * Estimate head yaw and pitch from key facial landmarks.
-   * Uses a simplified geometric approach without a full PnP solve.
-   */
   function estimateHeadPose(kp) {
     const nose = kp[NOSE_TIP];
     const chin = kp[CHIN];
     const leftEye = kp[LEFT_EYE_CORNER];
     const rightEye = kp[RIGHT_EYE_CORNER];
-    const leftMouth = kp[LEFT_MOUTH];
-    const rightMouth = kp[RIGHT_MOUTH];
+    if (!nose || !chin || !leftEye || !rightEye) return { yaw: 0, pitch: 0 };
 
-    if (!nose || !chin || !leftEye || !rightEye) {
-      return { yaw: 0, pitch: 0 };
-    }
-
-    // Yaw: ratio of left-to-nose vs nose-to-right distances
     const leftDist = dist([nose[0], nose[1]], [leftEye[0], leftEye[1]]);
     const rightDist = dist([nose[0], nose[1]], [rightEye[0], rightEye[1]]);
-    const totalDist = leftDist + rightDist;
-    // When facing forward, ratio ~ 0.5. Deviation indicates yaw.
-    const yawRatio = totalDist > 1e-6 ? (rightDist / totalDist) : 0.5;
-    // Map to approximate degrees: 0.5 = 0 degrees, 0.3 = ~-40deg, 0.7 = ~40deg
+    const total = leftDist + rightDist;
+    const yawRatio = total > 1e-6 ? (rightDist / total) : 0.5;
     const yaw = (yawRatio - 0.5) * 100;
 
-    // Pitch: vertical relationship between nose tip and eye midpoint
     const eyeMidY = (leftEye[1] + rightEye[1]) / 2;
-    const faceHeight = dist([chin[0], chin[1]], [(leftEye[0] + rightEye[0]) / 2, eyeMidY]);
-    const noseOffset = nose[1] - eyeMidY;
-    const pitchRatio = faceHeight > 1e-6 ? (noseOffset / faceHeight) : 0.4;
-    // Neutral pitch ratio ~ 0.35-0.45. Map deviation to degrees.
+    const faceH = dist([chin[0], chin[1]], [(leftEye[0] + rightEye[0]) / 2, eyeMidY]);
+    const noseOff = nose[1] - eyeMidY;
+    const pitchRatio = faceH > 1e-6 ? (noseOff / faceH) : 0.4;
     const pitch = (pitchRatio - 0.4) * 120;
 
     return { yaw, pitch };
   }
 
-  /**
-   * Classify a single frame into a status.
-   */
-  function classifyFrame(earLeft, earRight, gazeOffset, yaw, pitch) {
-    const avgEAR = (earLeft + earRight) / 2;
-    const absGaze = Math.abs(gazeOffset);
-    const absYaw = Math.abs(yaw);
-    const absPitch = Math.abs(pitch);
+  /* ── Scoring functions ─────────────────────────────────────── */
 
-    if (avgEAR < EAR_THRESHOLD) {
-      return "Eyes Closed";
+  /**
+   * Eye score: 1 = open, 0 = closed
+   * Blinks < 300ms are ignored (score stays 1)
+   */
+  function scoreEyes(earLeft, earRight, now) {
+    const avgEAR = (earLeft + earRight) / 2;
+    const eyesClosed = avgEAR < EAR_CLOSED;
+
+    if (eyesClosed) {
+      if (eyesClosedSince === 0) {
+        eyesClosedSince = now;
+      }
+      const closedDuration = now - eyesClosedSince;
+      // Short blink → ignore, still score 1
+      if (closedDuration < BLINK_IGNORE_MS) return 1;
+      return 0;
+    } else {
+      eyesClosedSince = 0;
+      return 1;
     }
-    if (absYaw > YAW_THRESHOLD || absPitch > PITCH_THRESHOLD) {
-      return "Distracted";
-    }
-    if (absGaze > GAZE_THRESHOLD) {
-      return "Distracted";
-    }
-    return "Active";
   }
 
   /**
-   * Apply rolling-window majority vote to smooth predictions.
+   * Head score: forward=1, slight turn=0.5, looking away/down=0
+   * With grace time: looking away < 2s → keep last good score
    */
-  function smoothStatus() {
-    if (statusBuffer.length === 0) return "Unknown";
+  function scoreHead(yaw, pitch, now) {
+    // Apply calibration offset
+    const adjYaw = Math.abs(yaw - baselineYaw);
+    const adjPitch = pitch - baselinePitch; // signed: positive = looking down
 
-    const counts = {};
-    for (const s of statusBuffer) {
-      counts[s] = (counts[s] || 0) + 1;
+    let rawScore;
+    if (adjYaw > YAW_AWAY || Math.abs(adjPitch) > PITCH_AWAY) {
+      rawScore = 0;           // fully looking away
+    } else if (adjPitch > PITCH_DOWN) {
+      rawScore = 0;           // head down
+    } else if (adjYaw > YAW_SLIGHT) {
+      rawScore = 0.5;         // slight turn
+    } else {
+      rawScore = 1;           // forward
     }
 
-    // Priority: if many "Eyes Closed" frames, report that
-    let best = "Active";
-    let bestCount = 0;
-    for (const [status, count] of Object.entries(counts)) {
-      if (count > bestCount) {
-        bestCount = count;
-        best = status;
+    // Grace time: if head just turned away, keep previous good score for 2s
+    if (rawScore < 1) {
+      if (headAwaySince === 0) {
+        headAwaySince = now;
       }
+      const awayDuration = now - headAwaySince;
+      if (awayDuration < GRACE_MS) {
+        return lastGoodHeadScore;
+      }
+      return rawScore;
+    } else {
+      headAwaySince = 0;
+      lastGoodHeadScore = rawScore;
+      return rawScore;
     }
-    return best;
+  }
+
+  /**
+   * Sliding window average score
+   */
+  function getSmoothedScore(now) {
+    // Remove frames older than window
+    const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
+    while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
+      scoreWindow.shift();
+    }
+    if (scoreWindow.length === 0) return 0;
+    let sum = 0;
+    for (const f of scoreWindow) sum += f.score;
+    return sum / scoreWindow.length;
+  }
+
+  /**
+   * Convert smoothed score to status string
+   */
+  function scoreToStatus(score) {
+    if (score > 0.7) return "Active";
+    if (score >= 0.4) return "Semi-active";
+    return "Not active";
+  }
+
+  /* ── Calibration ───────────────────────────────────────────── */
+  function addCalibrationSample(yaw, pitch) {
+    calibrationData.push({ yaw, pitch });
+    if (calibrationData.length >= CALIBRATION_FRAMES) {
+      // Average the samples to find baseline
+      let sumY = 0, sumP = 0;
+      for (const s of calibrationData) { sumY += s.yaw; sumP += s.pitch; }
+      baselineYaw = sumY / calibrationData.length;
+      baselinePitch = sumP / calibrationData.length;
+      calibrating = false;
+      console.log("[attention] calibrated — baseline yaw:", baselineYaw.toFixed(1),
+        "pitch:", baselinePitch.toFixed(1));
+    }
   }
 
   /* ── Detection loop ────────────────────────────────────────── */
+  let _lastDebug = 0;
+
   async function detectLoop() {
     if (!running || !detector || !videoEl) return;
 
@@ -180,71 +227,89 @@
 
       try {
         if (videoEl.readyState >= 2) {
-          const faces = await detector.estimateFaces(videoEl, {
-            flipHorizontal: false,
-          });
+          const faces = await detector.estimateFaces(videoEl, { flipHorizontal: false });
 
           if (faces.length > 0) {
-            const kp = faces[0].keypoints.map(p => [p.x, p.y, p.z || 0]);
+            const face = faces[0];
 
-            // Compute EAR for both eyes
+            // Confidence threshold: skip low-confidence frames
+            const confidence = face.box ? 1 : (face.score || face.confidence || 1);
+            if (typeof confidence === "number" && confidence < CONFIDENCE_MIN) {
+              rafId = requestAnimationFrame(detectLoop);
+              return; // skip this frame
+            }
+
+            const kp = face.keypoints.map(p => [p.x, p.y, p.z || 0]);
+
+            // EAR
             const leftEyePts = LEFT_EYE.map(i => kp[i]);
             const rightEyePts = RIGHT_EYE.map(i => kp[i]);
             const earLeft = computeEAR(leftEyePts);
             const earRight = computeEAR(rightEyePts);
 
-            // Compute gaze direction from iris
-            let gazeOffset = 0;
-            if (kp.length > 473) {
-              // Model has iris landmarks (478 keypoints)
-              const leftIris = kp[LEFT_IRIS];
-              const rightIris = kp[RIGHT_IRIS];
-              const leftInner = kp[LEFT_EYE_INNER];
-              const leftOuter = kp[LEFT_EYE_OUTER];
-              const rightInner = kp[RIGHT_EYE_INNER];
-              const rightOuter = kp[RIGHT_EYE_OUTER];
-
-              const leftGaze = irisRatio(leftIris, leftInner, leftOuter);
-              const rightGaze = irisRatio(rightIris, rightInner, rightOuter);
-              gazeOffset = (leftGaze + rightGaze) / 2;
-            }
-
-            // Estimate head pose
+            // Head pose
             const { yaw, pitch } = estimateHeadPose(kp);
 
-            // Classify this frame
-            const frameStatus = classifyFrame(earLeft, earRight, gazeOffset, yaw, pitch);
+            // Calibration phase: learn baseline
+            if (calibrating) {
+              addCalibrationSample(yaw, pitch);
+              // During calibration, assume active
+              scoreWindow.push({ score: 1, ts: now });
+            } else {
+              // Score this frame
+              const eyeScore = scoreEyes(earLeft, earRight, now);
+              const headScore = scoreHead(yaw, pitch, now);
+              const frameScore = (eyeScore * EYE_WEIGHT) + (headScore * HEAD_WEIGHT);
 
-            // Add to rolling buffer
-            statusBuffer.push(frameStatus);
-            while (statusBuffer.length > ROLLING_WINDOW) {
-              statusBuffer.shift();
+              scoreWindow.push({ score: frameScore, ts: now });
             }
 
-            // Smooth
-            currentStatus = smoothStatus();
+            // Trim window
+            const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
+            while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
+              scoreWindow.shift();
+            }
+
+            // Smoothed score
+            currentScore = getSmoothedScore(now);
+            currentStatus = scoreToStatus(currentScore);
+
+            // Debug log every 5 seconds
+            if (now - _lastDebug > 5000) {
+              _lastDebug = now;
+              const eyeS = scoreEyes(earLeft, earRight, now);
+              const headS = calibrating ? 1 : scoreHead(yaw, pitch, now);
+              console.log("[attention] eye:", eyeS.toFixed(2),
+                "head:", headS.toFixed(2),
+                "combined:", currentScore.toFixed(2),
+                "→", currentStatus,
+                calibrating ? "(calibrating)" : "");
+            }
+
           } else {
-            // No face detected
-            statusBuffer.push("Distracted");
-            while (statusBuffer.length > ROLLING_WINDOW) {
-              statusBuffer.shift();
+            // No face detected → score 0
+            scoreWindow.push({ score: 0, ts: now });
+            const cutoff = now - (WINDOW_SIZE * DETECT_INTERVAL_MS);
+            while (scoreWindow.length > 0 && scoreWindow[0].ts < cutoff) {
+              scoreWindow.shift();
             }
-            currentStatus = smoothStatus();
+            currentScore = getSmoothedScore(now);
+            currentStatus = scoreToStatus(currentScore);
           }
 
-          // Notify local UI callback
-          if (onStatusChange) {
-            onStatusChange(currentStatus);
-          }
+          // Notify callback
+          if (onStatusChange) onStatusChange(currentStatus, currentScore);
 
           // Emit to server at throttled rate
           if (socketRef && socketRef.connected && (now - lastEmitTime >= EMIT_INTERVAL_MS)) {
             lastEmitTime = now;
-            socketRef.emit("attention:status", { status: currentStatus });
+            socketRef.emit("attention:status", {
+              status: currentStatus,
+              score: Math.round(currentScore * 100) / 100, // 2 decimal places
+            });
           }
         }
       } catch (err) {
-        // Silently continue — detection errors are non-fatal
         console.warn("[attention] detection error:", err.message);
       }
     }
@@ -259,12 +324,21 @@
     videoEl = video;
     socketRef = socket;
     onStatusChange = statusCallback || null;
-    statusBuffer.length = 0;
+    scoreWindow.length = 0;
+    calibrationData = [];
+    calibrating = true;
+    baselineYaw = 0;
+    baselinePitch = 0;
+    eyesClosedSince = 0;
+    headAwaySince = 0;
+    lastGoodHeadScore = 1;
+    currentScore = 0;
     currentStatus = "Unknown";
     lastDetectTime = 0;
     lastEmitTime = 0;
+    _lastDebug = 0;
 
-    // Dynamically load TF.js and the face landmarks model
+    // Dynamically load TF.js and face landmarks model
     if (!window.tf) {
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.22.0/dist/tf-core.min.js");
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.22.0/dist/tf-converter.min.js");
@@ -277,52 +351,40 @@
       await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5/dist/face-landmarks-detection.min.js");
     }
 
-    // Create the detector with MediaPipe FaceMesh
     const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
     detector = await faceLandmarksDetection.createDetector(model, {
       runtime: "tfjs",
-      refineLandmarks: true,   // enables iris landmarks (478 keypoints)
+      refineLandmarks: true,
       maxFaces: 1,
     });
 
     running = true;
     rafId = requestAnimationFrame(detectLoop);
-    console.log("[attention] started");
+    console.log("[attention] started (12fps, calibrating first 3s...)");
   }
 
   function stop() {
     running = false;
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    if (detector) {
-      detector.dispose();
-      detector = null;
-    }
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (detector) { detector.dispose(); detector = null; }
     videoEl = null;
     socketRef = null;
     onStatusChange = null;
-    statusBuffer.length = 0;
+    scoreWindow.length = 0;
+    calibrationData = [];
+    currentScore = 0;
     currentStatus = "Unknown";
     console.log("[attention] stopped");
   }
 
-  function isRunning() {
-    return running;
-  }
+  function isRunning() { return running; }
+  function getStatus() { return currentStatus; }
+  function getScore() { return currentScore; }
 
-  function getStatus() {
-    return currentStatus;
-  }
-
-  /* ── Script loader helper ──────────────────────────────────── */
+  /* ── Script loader ─────────────────────────────────────────── */
   function loadScript(src) {
     return new Promise((resolve, reject) => {
-      // Don't load twice
-      if (document.querySelector('script[src="' + src + '"]')) {
-        return resolve();
-      }
+      if (document.querySelector('script[src="' + src + '"]')) return resolve();
       const s = document.createElement("script");
       s.src = src;
       s.onload = resolve;
@@ -332,5 +394,5 @@
   }
 
   /* ── Export ─────────────────────────────────────────────────── */
-  window.AttentionDetection = { start, stop, isRunning, getStatus };
+  window.AttentionDetection = { start, stop, isRunning, getStatus, getScore };
 })();

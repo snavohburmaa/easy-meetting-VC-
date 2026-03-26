@@ -511,26 +511,26 @@ async function clearRoomSockets(code) {
 /** Pending meeting names: roomCode -> name (set before summary generation finishes) */
 const pendingMeetingNames = new Map();
 
-/** Per-room attention tracking: roomCode -> Map<socketId, { name, activeFrames, totalFrames }> */
+/** Per-room attention tracking: roomCode -> Map<socketId, { name, scoreSum, totalFrames }> */
 const attentionStats = new Map();
 
 function initAttention(code) {
   if (!attentionStats.has(code)) attentionStats.set(code, new Map());
 }
-function recordAttention(code, socketId, name, status) {
+function recordAttention(code, socketId, name, score) {
   const room = attentionStats.get(code);
   if (!room) return;
-  if (!room.has(socketId)) room.set(socketId, { name, activeFrames: 0, totalFrames: 0 });
+  if (!room.has(socketId)) room.set(socketId, { name, scoreSum: 0, totalFrames: 0 });
   const entry = room.get(socketId);
   entry.totalFrames++;
-  if (status === "Active") entry.activeFrames++;
+  entry.scoreSum += (typeof score === "number" && score >= 0 && score <= 1) ? score : 0;
 }
 function getAttentionSummary(code) {
   const room = attentionStats.get(code);
   if (!room) return [];
   const results = [];
   for (const [, entry] of room) {
-    const pct = entry.totalFrames > 0 ? Math.round((entry.activeFrames / entry.totalFrames) * 100) : 0;
+    const pct = entry.totalFrames > 0 ? Math.round((entry.scoreSum / entry.totalFrames) * 100) : 0;
     results.push({ name: entry.name, activePercent: pct, totalFrames: entry.totalFrames });
   }
   return results;
@@ -744,15 +744,17 @@ io.on("connection", (socket) => {
     if (!code) return;
     const status = typeof payload?.status === "string" ? payload.status.slice(0, 20) : "";
     if (!status) return;
+    const score = typeof payload?.score === "number" ? Math.max(0, Math.min(1, payload.score)) : 0;
     const room = rooms.getRoom(code);
     if (!room) return;
     // Skip host — only track participants
     if (room.hostId === socket.id) return;
-    recordAttention(code, socket.id, socket.user.name, status);
+    recordAttention(code, socket.id, socket.user.name, score);
     io.to(room.hostId).emit("attention:update", {
       peerId: socket.id,
       name: socket.user.name,
       status,
+      score,
     });
   });
 

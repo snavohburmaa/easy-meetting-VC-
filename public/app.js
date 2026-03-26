@@ -194,6 +194,13 @@ if ("serviceWorker" in navigator) {
       btn.title = muted ? "Unmute microphone" : "Mute microphone";
       renderIcons();
     }
+    // Pause/resume STT when mic is muted/unmuted to prevent
+    // picking up other people's audio through speakers
+    if (muted) {
+      stopStt();
+    } else if (subtitlesEnabled) {
+      startStt();
+    }
   }
 
   function setCamMuted(muted) {
@@ -884,6 +891,7 @@ if ("serviceWorker" in navigator) {
 
     recognition.onresult = (event) => {
       if (!socket || !socket.connected) return;
+      if (micMuted) return; // Don't emit captions when mic is muted
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const text = result[0].transcript;
@@ -969,14 +977,14 @@ if ("serviceWorker" in navigator) {
     socket.on("peer:left",   ({ peerId })        => { removePeer(peerId); liveAttention.delete(peerId); peerAttentionCounts.delete(peerId); updateAttentionMeter(); });
 
     // Attention updates — host only receives these for remote participants
-    socket.on("attention:update", ({ peerId, name, status }) => {
+    socket.on("attention:update", ({ peerId, name, status, score }) => {
       if (!meetingState.isHost) return;
       liveAttention.set(peerId, status);
-      // Track active percentage per peer
-      if (!peerAttentionCounts.has(peerId)) peerAttentionCounts.set(peerId, { active: 0, total: 0 });
+      // Track cumulative score for percentage
+      if (!peerAttentionCounts.has(peerId)) peerAttentionCounts.set(peerId, { scoreSum: 0, total: 0 });
       const counts = peerAttentionCounts.get(peerId);
       counts.total++;
-      if (status === "Active") counts.active++;
+      counts.scoreSum += (typeof score === "number") ? score : 0;
       // Update badge on video tile with cumulative %
       const wrap = document.getElementById("remote-" + peerId);
       if (wrap) {
@@ -986,7 +994,7 @@ if ("serviceWorker" in navigator) {
           badge.className = "attention-badge";
           wrap.appendChild(badge);
         }
-        const pct = counts.total > 0 ? Math.round((counts.active / counts.total) * 100) : 0;
+        const pct = counts.total > 0 ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
         const cls = pct >= 70 ? "Active" : pct >= 40 ? "Distracted" : "Eyes Closed";
         badge.setAttribute("data-status", cls);
         badge.textContent = pct + "%";
@@ -1320,7 +1328,7 @@ if ("serviceWorker" in navigator) {
     // Attention overlays (host only, remote peers only)
     if (isHost && peerId) {
       const counts = peerAttentionCounts.get(peerId);
-      const pct = (counts && counts.total > 0) ? Math.round((counts.active / counts.total) * 100) : 0;
+      const pct = (counts && counts.total > 0) ? Math.round((counts.scoreSum / counts.total) * 100) : 0;
       const barClass = pct >= 70 ? "high" : pct >= 40 ? "medium" : "low";
 
       // Bottom attention bar
@@ -1471,13 +1479,13 @@ if ("serviceWorker" in navigator) {
     if (!meter || !meetingState.isHost) return;
     if (peerAttentionCounts.size === 0) { meter.classList.add("hidden"); return; }
     meter.classList.remove("hidden");
-    // Compute overall cumulative active % across all participants
-    let totalActive = 0, totalFrames = 0;
+    // Compute overall cumulative active % across all participants (score-based)
+    let totalScore = 0, totalFrames = 0;
     for (const counts of peerAttentionCounts.values()) {
-      totalActive += counts.active;
+      totalScore += counts.scoreSum;
       totalFrames += counts.total;
     }
-    const pct = totalFrames > 0 ? Math.round((totalActive / totalFrames) * 100) : 0;
+    const pct = totalFrames > 0 ? Math.round((totalScore / totalFrames) * 100) : 0;
     const fill = $("attention-meter-fill");
     const label = $("attention-meter-pct");
     if (fill) {
